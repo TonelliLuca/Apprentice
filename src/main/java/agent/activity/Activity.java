@@ -1,6 +1,7 @@
 
 package agent.activity;
 
+import agent.memory.ToolManual;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.util.*;
@@ -13,7 +14,13 @@ public class Activity {
     private volatile Status status;
     private final List<ReasoningStep> history = new CopyOnWriteArrayList<>();
     private final Map<String, JsonNode> beliefs = new ConcurrentHashMap<>();
+    private final Map<String, String> openedManuals = new HashMap<>();
     private final List<JsonNode> incomingEvents = new CopyOnWriteArrayList<>();
+    private final Set<String> loadedMemories = new LinkedHashSet<>();
+    private boolean memoriesLoaded = false;
+
+
+
     public enum Status {
         REASONING,
         ACTION,
@@ -121,5 +128,43 @@ public class Activity {
     private String escape(String s) {
         if (s == null) return "";
         return s.replace("\"", "\\\"");
+    }
+
+    public void openManual(ToolManual manual) {
+        this.openedManuals.put(manual.getToolName(), manual.toFullManual());
+    }
+
+    public String getOpenedManualsView() {
+        if (openedManuals.isEmpty()) return "NO MANUALS OPENED YET.";
+        return String.join("\n\n", openedManuals.values());
+    }
+
+    public boolean isManualOpen(String name) {
+        return openedManuals.containsKey(name);
+    }
+
+    public boolean areMemoriesLoaded() {
+        return memoriesLoaded;
+    }
+
+    public boolean isMemoriesLoaded() {
+        return memoriesLoaded;
+    }
+
+    public void setMemoriesLoaded(boolean memoriesLoaded) {
+        this.memoriesLoaded = memoriesLoaded;
+    }
+
+    public void addMemories(List<String> memories) {
+        if (memories != null) {
+            this.loadedMemories.addAll(memories);
+        }
+    }
+
+    public String getMemoriesView() {
+        if (loadedMemories.isEmpty()) {
+            return "No relevant past memories found.";
+        }
+        return String.join("\n\n--- MEMORY ---\n", loadedMemories);
     }
 }

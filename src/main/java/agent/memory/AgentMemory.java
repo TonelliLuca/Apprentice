@@ -5,70 +5,89 @@ import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.embedding.onnx.allminilml6v2.AllMiniLmL6V2EmbeddingModel;
-import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import dev.langchain4j.store.embedding.filter.Filter;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+
+import static dev.langchain4j.store.embedding.filter.MetadataFilterBuilder.metadataKey;
 
 public class AgentMemory {
 
-    // Embedding model that converts text to numeric vectors
     private final EmbeddingModel embeddingModel;
-
-    // In-memory embedding store for now
     private final EmbeddingStore<TextSegment> embeddingStore;
 
+    private final Map<String, ToolManual> manualRegistry = new ConcurrentHashMap<>();
+
+    private static final String KEY_TYPE = "memory_type";
+    private static final String TYPE_EPISODE = "EPISODE";
+    private static final String TYPE_MANUAL_CATALOG = "MANUAL_CATALOG";
+
     public AgentMemory() {
-        // Initialize here to keep other classes simple
         this.embeddingModel = new AllMiniLmL6V2EmbeddingModel();
         this.embeddingStore = new InMemoryEmbeddingStore<>();
     }
 
-    /**
-     * Save a new episodic memory
-     */
+
+    public void ingestManual(ToolManual manual) {
+        manualRegistry.put(manual.getToolName(), manual);
+
+        Metadata metadata = new Metadata();
+        metadata.put(KEY_TYPE, TYPE_MANUAL_CATALOG);
+        metadata.put("tool_name", manual.getToolName());
+
+        TextSegment segment = TextSegment.from(manual.toCatalogEntry(), metadata);
+        Embedding embedding = embeddingModel.embed(segment).content();
+        embeddingStore.add(embedding, segment);
+    }
+
+
     public void save(EpisodicMemory memory) {
-        // Convert memory to text for embedding
         String textContent = memory.toTextContent();
 
-        // Create a TextSegment with metadata (useful for future filtering)
         Metadata metadata = new Metadata();
-        metadata.put("outcome", "SUCCESS"); // Example: store only successes in the vector DB
+        metadata.put(KEY_TYPE, TYPE_EPISODE);
+        metadata.put("outcome", "SUCCESS");
         metadata.put("original_goal", memory.getOriginalGoal());
 
         TextSegment segment = TextSegment.from(textContent, metadata);
-
-        // Compute the embedding vector
         Embedding embedding = embeddingModel.embed(segment).content();
-
-        // Add to the store
         embeddingStore.add(embedding, segment);
-
-        System.out.println("Memory saved: " + memory.getOriginalGoal());
     }
 
-    /**
-     * Retrieve memories similar to a new goal (for RAG)
-     */
-    public List<String> retrieveRelevantMemories(String currentGoal, int maxResults) {
-        // Compute embedding for the new goal
-        Embedding queryEmbedding = embeddingModel.embed(currentGoal).content();
 
-        // Build the search request
+    public List<String> searchManualCatalog(String query, int maxResults) {
+        return search(query, maxResults, metadataKey(KEY_TYPE).isEqualTo(TYPE_MANUAL_CATALOG));
+    }
+
+
+    public ToolManual getManualByName(String toolName) {
+        return manualRegistry.get(toolName);
+    }
+
+
+    public List<String> retrieveRelevantMemories(String currentGoal, int maxResults) {
+        return search(currentGoal, maxResults, metadataKey(KEY_TYPE).isEqualTo(TYPE_EPISODE));
+    }
+
+    private List<String> search(String query, int maxResults, Filter filter) {
+        Embedding queryEmbedding = embeddingModel.embed(query).content();
+
         EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
                 .queryEmbedding(queryEmbedding)
                 .maxResults(maxResults)
-                .minScore(0.6) // Apply a minimum score filter for efficiency
+                .minScore(0.6) // Soglia di similarità minima
+                .filter(filter)
                 .build();
 
-        // Execute the search
         EmbeddingSearchResult<TextSegment> result = embeddingStore.search(request);
 
-        // Return only the text of matched memories
         return result.matches().stream()
                 .map(match -> match.embedded().text())
                 .collect(Collectors.toList());
