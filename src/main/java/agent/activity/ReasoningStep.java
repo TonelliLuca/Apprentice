@@ -81,7 +81,9 @@ public class ReasoningStep {
         for (Map.Entry<String, Object> e : beliefsSnapshot.entrySet()) {
             if (!first) sb.append(",");
             first = false;
-            sb.append("\"").append(escape(e.getKey())).append("\":\"").append(escape(String.valueOf(e.getValue()))).append("\"");
+            sb.append("\"").append(escape(e.getKey())).append("\":");
+            String valStr = String.valueOf(e.getValue());
+            sb.append(valStr);
         }
         sb.append("}");
         return sb.toString();
