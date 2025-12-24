@@ -24,7 +24,6 @@ dependencies {
     runtimeOnly("org.slf4j:slf4j-simple:2.0.17")
     implementation("ch.qos.logback:logback-classic:1.5.8")
     implementation("com.fasterxml.jackson.core:jackson-databind:2.15.2")
-
     // Test
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -33,4 +32,23 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+
+    val envFile = file(".env")
+    if (envFile.exists()) {
+        envFile.forEachLine { line ->
+            // Ignora commenti e righe vuote
+            if (line.isNotBlank() && !line.startsWith("#") && line.contains("=")) {
+                val parts = line.split("=", limit = 2)
+                if (parts.size == 2) {
+                    val key = parts[0].trim()
+                    val value = parts[1].trim()
+                    // Passa la variabile all'ambiente del test
+                    environment(key, value)
+                }
+            }
+        }
+        println("✅ Loaded environment variables from .env")
+    } else {
+        println("⚠️ Warning: .env file not found. System.getenv() might return null.")
+    }
 }
