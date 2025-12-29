@@ -7,149 +7,177 @@ import dev.langchain4j.service.V;
 public interface ReactBrain {
 
     @Agent("""
-        You are the BRAIN of an asynchronous, event-driven agent.
+        You are an Autonomous Intelligent Agent operating in an event-driven 'Agents & Artifacts' (A&A) environment. Explore the environment to achieve assigned GOALS by leveraging TOOLS (ARTIFACTS) and your COGNITIVE CYCLE.
         
-        SYSTEM ARCHITECTURE (CRITICAL):
-        1. ASYNCHRONOUS TOOLS: Your tools are non-blocking. Calling a tool only INITIATES an action (e.g., "Start Timer").
-        2. SSE EVENTS: The actual result or completion arrives later as an asynchronous Event via SSE.
-        3. BELIEF UPDATES: These events automatically update your 'CONTEXT' (Variables/Beliefs).
-        4. HISTORY IS KEY: Since actions are split from results, you must strictly check 'HISTORY' to know if you have already started an action.
-        
-        Follow the REASON-ACT-OBSERVE loop to solve problems step-by-step.
-    """)
-    @UserMessage("""
-        You are the REASONING phase.
-        
-        MAIN GOAL: {{goal}}
-        === RELEVANT PAST MEMORIES (Use these as a guide) ===
-                        {{memories}}
-        ============================================================
-        === PROGRESS TRACKER (The Master Plan) ===
-        {{progress}}
-        ==========================================
-       
-        
-        CURRENT CONTEXT (Variables): {{context}}
+        ### SYSTEM RULES:
+        1. **Artifacts are Passive:** Tools do not "push" info. You must actively "PULL" manuals/documentation via tools.
+        2. **Asynchronous Tools:** Tool calls only INITIATE a process. Wait for SSE Events for completion confirmation.
+        3. **Beliefs are Truth:** The 'VARIABLES' section contains the current live state of the world. TRUST IT.
+        4. **Safety First:** Reading tool documentation ALWAYS takes precedence over operating it blindly.
 
-        YOUR TASK:
-        1. Check PAST MEMORIES first! Does a successful procedure exist?
-        2. IF YES: You MUST follow the procedure steps exactly, even if they seem redundant (e.g. subscribing first).
-        3. Look at the PROGRESS TRACKER. Identify what is marked [x] (Done) and what is [ ] (Pending).
-        4. Decide the very next step based on the first Pending item and the context, the context beliefs are very IMPORTANT.
-        5. Formulate a plan for the ACTION phase.
+        Your existence is defined by a Cycle: OBSERVE -> REASON -> (SETUP or ACT).
 
-        IMPORTANT RULES:
-        - NEVER call tools in this phase.
-        - NEVER output function calls here.
-        - ALWAYS return a brief reasoning summary text.
-        - DO NOT return anything other than the reasoning summary.
+        ### COGNITIVE ARCHITECTURE (CRITICAL):
+        1. **STATE over NARRATIVE:** Your 'HISTORY' tells you what happened. Your 'VARIABLES' (Context) tell you what IS true now.
+           - If 'MOUNTED MANUALS' shows a tool, it IS mounted. DO NOT try to mount it again, even if History doesn't mention it.
+           - Trust Variables absolutely.
+
+        2. **PHASE RESPONSIBILITIES:**
+           - **SETUP:** Internal configuration only (loading manuals).
+           - **REASON:** Decision making based on Context.
+           - **ACT:** External interaction only (touching the world).
+
         
-        RECENT HISTORY (Last 5 steps):
-        {{history}}
     """)
-    String reason(@V("goal")String goal, @V("history")String history, @V("context")String context, @V("progress") String progress, @V("memories") String memories);
+
 
     @UserMessage("""
-        You are the ACTION phase, if i ask to do a tool call you need to perform it via remote procedure call.
-        
-        YOUR TASK:
-        Execute the next pending action using the available tools or do nothing if no tool is applicable.
-        Use the provided tools only if they correspond to the next pending step in the PROGRESS TRACKER.
-        If you decide to use a tool call the tool **natively** with the correct parameters.
-        If no tool is applicable, do NOT call any tool and explain why in the summary.
-        
+        === PHASE: SETUP ===
         GOAL: {{goal}}
-        PROGRESS: {{progress}}
-        CONTEXT: {{context}}
+        GLOBAL CATALOG (Keys Available): {{catalog}}
+        MOUNTED MANUALS (Active Keys): {{opened_manuals}}
         
-
-
-        STRICT TOOL USE RULES:
-            1. You have access to specific tools (e.g., 'timerTool').
-            2. ONLY use a tool if it directly solves the current step of the Goal.
-            3. DO NOT use tools "just in case" or for unrelated tasks.
-            4. If the available tools do not match the Goal, YOU MUST NOT CALL ANY TOOL.
-               Instead, return "tool_name": null and a summary explaining why.
+        YOUR TASK:
+        1. Compare GLOBAL CATALOG with MOUNTED MANUALS.
+        2. If a manual exists in the CATALOG but is NOT in MOUNTED, you MUST add it to 'mount_tools'.
+           - **CRITICAL RULE:** You MUST use the EXACT string key found in the 'GLOBAL CATALOG' list above.
+           - **STRICT PROHIBITION:** Do NOT use the full descriptive title. 
+           - **STRATEGY:** Mount only necessary manuals found in the catalog to ensure the Reasoning phase has full context.
+        3. If a manual is in MOUNTED but irrelevant, add it to 'unmount_tools'.
         
-        !!! ANTI-LOOP SAFEGUARDS !!!
-        1. Tools ONLY accept the parameters defined in their schema.
-        2. Use the tool ONLY ONCE per turn.
-        
-        Expected Format only JSON (no markdown, no code blocks, no extra text):
-        {
-          "tool_name": "The name of the tool you used (or null)",
-          "summary": "Brief result of the action"
+        OUTPUT JSON:
+        { 
+          "mount_tools": ["exact_key_from_catalog",...], 
+          "unmount_tools": ["exact_key_from_catalog",...], 
+          "summary": "Brief explanation of what was mounted/unmounted." 
         }
         
-        IMPORTANT:
-        - If you called a tool, 'tool_name' MUST be populated.
-        - This signals the system to wait for asynchronous events (SSE).
-        
-        RECENT HISTORY (Last 5 steps):
+        RECENT HISTORY:
         {{history}}
-
     """)
-    String act(@V("goal")String goal, @V("history")String history, @V("context")String context, @V("progress") String progress);
+    String setup(@V("goal") String goal, @V("catalog") String catalog, @V("opened_manuals") String openedManuals, @V("history") String history);
+
 
     @UserMessage("""
-    You are the OBSERVATION phase.
-    
-    GOAL: {{goal}}
-    
-    CURRENT PROGRESS TRACKER:
-    {{progress}}
-    
-    CONTEXT EVENTS: {{events}}
-    CONTEXT: {{context}}
-
-    YOUR PRIORITY TASK:
-    Analyze the 'Context Events' and 'HISTORY' and 'CONTEXT' to update the plan or create a new one.
-    
-    1. INITIAL PLANNING (If Progress is empty):
-       - Assess if the GOAL is achievable with the tools you likely have or general logic.
-       - IF ACHIEVABLE: Create the initial Master Plan in 'new_progress' and set each point to [ ], Break down complex goals into distinct, atomic steps.
-       - IF IMPOSSIBLE: Do NOT create a plan. Set "completed": true and explain why in "summary".
-
-    
-    2. PROGRESS UPDATE (STRICT VERIFICATION):
-       - You may ONLY mark a pending item [ ] as [x] IF:
-         a) An event in 'CONTEXT EVENTS' explicitly confirms it (e.g., 'timer.finished').
-         b) The 'HISTORY' shows you just successfully performed the Action for that step.
-       - DO NOT mark a step as [x] just because previous steps are done.
-       - If you have NOT performed the action for a pending step yet, keep it as [ ].
-
-       
-    3. COMPLETION CHECK:
-       If the entire Goal is achieved based on the tracker (all items are [x]), YOU MUST return "completed": true IMMEDIATELY.
-    
-    4. FAILURE/IMPOSSIBILITY CHECK:
-       Look at the 'HISTORY'. Did the 'ACTION' phase fail to find a tool or report an error?
-       If so, mark "completed": true (giving up is a valid completion).
-
-    CRITICAL OUTPUT RULES:
-    1. Return STRICTLY RAW JSON.
-    2. DO NOT use Markdown code blocks.
-    3. Start the response immediately with '{'.
-    4. DO NOT pass this JSON summary to the tool itself!
-
-    Return JSON format:
-    {
-      "completed": true|false,
-      "summary": "Explanation of what happened",
-      
-      "new_progress": "1 [ ] Step 1\\n 2 [ ] Step 2...", 
-      
-      "update_variables": { ... }
-    }
-    IMPORTANT RULES:
-        - NEVER call tools in this phase.
-        - NEVER output function calls here.
+        === PHASE: REASONING ===
+        MAIN GOAL: {{goal}}
+        PLAN: {{progress}}
+        VARIABLES: {{context}}
+        MOUNTED MANUALS: {{opened_manuals}}
+        GLOBAL CATALOG (Available): {{catalog}}
+        RELEVANT MEMORIES from past executions: {{memories}}
         
-    RECENT HISTORY (Last 5 steps):
-    {{history}}
+        IMPORTANT: 
+        - VARIABLES contain the CURRENT state of the world. TRUST THEM OVER HISTORY.
+        - IF A TOOL HAS A MANUAL, RETRIEVE AND READ IT BEFORE USE.
+        
+        YOUR TASK:
+        1. Look at the PROGRESS TRACKER and GOAL.
+        
+        2. **DOCUMENTATION & KNOWLEDGE CHECK (Priority 0):** Before deciding to execute any physical action, verify your knowledge coverage:
+           
+           A. **GOAL ENTITY COVERAGE:** Look at every physical system mentioned in the **MAIN GOAL** .
+              - Do you have a mounted manual for **EACH** noun/system?
+              - **IF NO:** You are blind. -> DECISION: ACT (Instruction: "Retrieve manual for [Missing System]").
+           
+           B. **STRICT TOOL AUTHORITY:** Look at the tool you intend to use next.
+              - Do you have the SPECIFIC manual for that tool mounted? 
+              - *Rule:* Having a generic manual does NOT authorize using a specific subsystem unless the manual explicitly covers it.
+              - **IF NO:** -> DECISION: ACT (Instruction: "Retrieve manual for [Specific Tool]").
+           
+           C. **CONTEXT MANAGEMENT:**
+              - If a needed manual is in CATALOG but NOT MOUNTED -> DECISION: SETUP.
+              - If you have irrelevant manuals mounted that confuse the context -> DECISION: SETUP (to unmount).
 
-""")
-    String observe(@V("goal") String goal, @V("history") String history, @V("context") String context, @V("events") String events, @V("progress") String progress);
+        3. **SAFETY CHECK:** Compare VARIABLES against MOUNTED MANUALS rules. If a rule says "WAIT" for a status, you MUST obey.
+        
+        4. Decide the immediate next step.
+
+        *** DECISION RULES ***
+        - **Knowledge Gap** (Missing in Catalog) -> DECISION: ACT (Retrieve).
+        - **Unmounted Manual** (In Catalog, not Mounted) -> DECISION: SETUP.
+        - **Safety Lock** (Variable state blocks action) -> DECISION: ACT (Instruction: "Wait/Monitor").
+        - **Ready** (Manuals read & Safety checks pass) -> DECISION: ACT (Instruction: "Execute tool [Name]").
+
+        OUTPUT JSON: { "decision": "ACT" | "SETUP", "thought": "...", "next_step_description": "..." }
+        
+        Consider the history provided below for your analysis, if you notice a sequence of actions that loop without progress, make sure to adjust your next step to avoid infinite loops.
+        RECENT HISTORY:
+        {{history}}
+    """)
+    String reason(@V("goal") String goal, @V("history") String history, @V("context") String context, @V("progress") String progress, @V("opened_manuals") String openedManuals, @V("catalog") String catalog, @V("memories") String memories);
+
+
+    @UserMessage("""
+        === PHASE: ACTION ===
+        COMMAND: "{{instruction}}"
+        CONTEXT VARIABLES: {{context}}
+        PROGRESS TRACKER: {{progress}}
+        MOUNTED MANUALS: {{manuals}}
+        
+        AVOID BLIND ACTIONS, USE TOOLS WISELY, READ MANUALS WHENEVER POSSIBLE.
+
+        YOUR TASK:
+        Execute the instruction using ONE tool call or NONE.
+        Skipping this phase is ALLOWED if the instruction is to "Check", "Verify" or "Wait".
+        
+        *** RULES ***
+        1. **NO BLIND ACTION:** If instruction is "Check", "Verify" or "Wait", DO NOT call tools. Report state in summary.
+        2. **VERBATIM RETRIEVAL:** If instruction is "Retrieve manual", call retrieval tool.
+           - **CRITICAL:** In 'learned_manuals', you MUST copy the 'content' WORD-FOR-WORD from the output.
+           - **PROHIBITION:** Do NOT summarize. Copy safety rules like "WAIT IF RAMPING" exactly.
+        
+        OUTPUT JSON:
+        {
+          "tool_name": "UsedToolName or null",
+          "summary": "Result of action",
+          "expect_event": true|false (if tool_name is null, expect_event must be false),
+          "learned_manuals": [ { "tool_name": "...", "description": "...", "content": "..." } ]
+        }
+    """)
+    String act(@V("instruction") String instruction, @V("context") String context, @V("progress") String progress, @V("manuals") String manuals);
+
+    @UserMessage("""
+        === PHASE: OBSERVATION ===
+        GOAL: {{goal}}
+        CURRENT PROGRESS TRACKER:
+        {{progress}}
+        CONTEXT EVENTS: {{events}}
+        CONTEXT VARIABLES: {{context}}
+        OPENED MANUALS: {{opened_manuals}}
+        
+        YOUR PRIORITY TASK:
+        Analyze Events, History, and Variables to update the checklist.
+        
+        1. **INITIAL PLANNING:** If Progress is empty, break Goal into atomic steps.
+           - **CRITICAL RULE:** Steps must be CONCRETE TOOL ACTIONS (e.g., "Activate Pump", "Open Valve"). 
+           - **FORBIDDEN:** Abstract steps like "Assess environment", "Prepare tools", "Gather materials".
+           - Step 1 MUST be "Retrieve and Mount Protocol Manuals".
+           
+        2. **STRICT VERIFICATION:** Mark [x] ONLY if confirmed by an EVENT, a VARIABLE change, or a successful HISTORY action.
+           - If a step was "Retrieve Manuals" and History says "Saved: hydraulics", mark it [x].
+           
+        3. **REPLANNING:** If an EVENT or VARIABLE or MANUAL indicates a new condition affecting the plan, update the checklist accordingly.
+           - Add new steps if needed.
+           - Remove or adjust steps that are no longer relevant.
+           - Ensure all tools to be used have their manuals retrieved first based on the CURRENT PROGRESS TRACKER first [ ] step.
+               - If a tool method isn't been documented in the current manuals, you MUST retrieve its manual first.
+               - If some mounted manual are irrelevant to the current step in the PLAN, you MAY unmount them in SETUP.
+         
+        5. COMPLETE: If all steps are marked complete and the GOAL:{{goal}} is achieved, set "completed" to true. 
+                     If you think that the GOAL is unachievable, set "completed" to true and explain why in the summary.
+           
+        OUTPUT JSON:
+        {
+          "completed": true|false,
+          "summary": "Explanation of transitions",
+          "new_progress": "1 [x] Retrieve Manuals\\n2 [ ] ...", 
+        }
+        
+        Consider the history provided below for your analysis.
+        HISTORY: {{history}}
+    """)
+    String observe(@V("goal") String goal, @V("history") String history, @V("context") String context, @V("events") String events, @V("progress") String progress, @V("opened_manuals") String openedManuals);
 
     @UserMessage("""
         You are the REFLECTION phase.
@@ -167,6 +195,9 @@ public interface ReactBrain {
         3. PROCEDURE: Extract the high-level steps that worked (The "Happy Path"). 
            - Generalize specific values (e.g., instead of "set timer for 5s", use "set timer for required duration").
            - Note any important dependencies (e.g., "Wait for X before doing Y").
+        
+        NOTE: if you successfully retrieved some manuals, they are now part of your knowledge base so you don't need to specify retrieving them again in the procedure unless they were critical to success. They are stored in your long-term memory catalog.
+        
         
         CRITICAL: Return ONLY JSON. No markdown.
         
