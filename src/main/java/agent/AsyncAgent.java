@@ -4,6 +4,7 @@ import agent.activity.Activity;
 import agent.activity.ReasoningStep;
 import agent.memory.AgentMemory;
 import agent.memory.EpisodicMemory;
+import agent.memory.ToolManual;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.NullNode;
@@ -12,9 +13,6 @@ import dev.langchain4j.agentic.AgenticServices;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.model.chat.ChatModel;
-import dev.langchain4j.model.embedding.onnx.allminilml6v2.AllMiniLmL6V2EmbeddingModel;
-import dev.langchain4j.model.ollama.OllamaChatModel;
-import dev.langchain4j.model.openai.OpenAiChatModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,56 +21,41 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class AsyncAgent<T extends ReactBrain> {
+
+    private final T reasoningBrain;
+    private final T actionBrain;
     private final ChatModel model;
     private final Class<T> agentInterface;
-    private final T agentBrain;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AgentMemory agentMemory;
-    private final UUID agentId = UUID.randomUUID();
     private final Logger logger = LoggerFactory.getLogger(AsyncAgent.class);
-
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Map<String, Activity> activityRegistry = new ConcurrentHashMap<>();
-
     private final String sseUrl;
-
     private final BlockingQueue<Activity> activityQueue = new LinkedBlockingQueue<>();
     private final AtomicBoolean loopRunning = new AtomicBoolean(true);
-
-    private static final int WINDOW_SIZE = 5;
+    private static final int WINDOW_SIZE = 7;
 
     private AsyncAgent(Builder<T> builder) {
         this.agentMemory = new AgentMemory();
         this.model = builder.model;
         this.agentInterface = builder.agentInterface;
         this.sseUrl = builder.sseUrl;
-
-        var agent = AgenticServices
-                .agentBuilder(agentInterface)
-                .chatModel(model)
-                .beforeAgentInvocation(request -> logger.debug("[BEFORE AGENT] {}", request))
-                .afterAgentInvocation(response -> logger.debug("[AFTER AGENT] {}", response));
-
-        if (builder.tools != null && builder.tools.length > 0) {
-            agent.tools(builder.tools);
-        }
-
-        if (builder.mcpToolProvider != null) {
-            agent.toolProvider(builder.mcpToolProvider);
-        }
-
-        this.agentBrain = agent.build();
-
+        this.reasoningBrain = AgenticServices.agentBuilder(agentInterface).chatModel(model).build();
+        var actionBuilder = AgenticServices.agentBuilder(agentInterface).chatModel(model);
+        if (builder.tools != null && builder.tools.length > 0) actionBuilder.tools(builder.tools);
+        if (builder.mcpToolProvider != null) actionBuilder.toolProvider(builder.mcpToolProvider);
+        this.actionBrain = actionBuilder.build();
         if (this.sseUrl != null && !this.sseUrl.isEmpty()) {
             startSseListener();
         }
-
         executor.submit(this::eventLoop);
     }
 
@@ -81,44 +64,97 @@ public class AsyncAgent<T extends ReactBrain> {
         Activity activity = new Activity(request);
         activityRegistry.put(activity.getUuid(), activity);
         activityQueue.offer(activity);
-        logger.info("Queued Activity {} (goal={})", activity.getUuid(), request);
+        logger.info("🚀 [AGENT] NEW GOAL: \"{}\" (ID: {})", request, activity.getUuid());
     }
 
     private void eventLoop() {
-        logger.info("🚦 Agent event loop started");
+        logger.info("🚦 [SYSTEM] Agent Event Loop Started");
         while (loopRunning.get() && !Thread.currentThread().isInterrupted()) {
             try {
                 Activity activity = activityQueue.poll(500, TimeUnit.MILLISECONDS);
                 if (activity == null) continue;
 
+
+                if (activity.hasEvents() &&
+                        activity.getStatus() != Activity.Status.OBSERVATION &&
+                        activity.getStatus() != Activity.Status.COMPLETED) {
+                    logger.info("⚡ [GUARD] Pending events detected! Skipping to OBSERVATION.");
+                    activity.setStatus(Activity.Status.OBSERVATION);
+                    activityQueue.offer(activity);
+                    continue;
+                }
+
                 Activity.Status status = activity.getStatus();
-                String phase = status == null ? "UNKNOWN" : status.name();
-                logger.debug("Processing activity {} phase={}", activity.getUuid(), phase);
-
-                String history = this.extractActivityHistory(activity, WINDOW_SIZE);
-                String activityUuid = activity.getUuid();
-                String contextJson;
-                try {
-                    Map<String, Object> ctx = new HashMap<>();
-                    ctx.put("activityUuid", activityUuid);
-                    ctx.put("variables", activity.getBeliefsSnapshot());
-                    contextJson = objectMapper.writeValueAsString(ctx);
-                } catch (Exception e) {
-                    logger.debug("Failed to serialize context", e);
-                    contextJson = "";
-                }
-
-                // ---  PROGRESS TRACKER EXTRACTION ---
-                String progressTracker = "(No plan yet. Create one in Observation phase.)";
-                JsonNode progressNode = activity.getBelief("goal_progress");
-                if (progressNode != null && !progressNode.isNull()) {
-                    progressTracker = progressNode.asText();
-                }
+                String history = extractActivityHistory(activity, WINDOW_SIZE);
+                String contextJson = buildContextJson(activity);
+                String progressTracker = extractProgressTracker(activity);
 
                 switch (status) {
+                    case SETUP -> {
+                        logger.info("🔧 [SETUP] Assessing Manual Needs for Goal: '{}'", activity.getGoal());
+
+                        // Retrieve the current manual catalog
+                        List<String> catalog = agentMemory.searchManualCatalog(activity.getGoal(), 100);
+                        String catalogView = catalog.isEmpty() ? "CATALOG EMPTY (Need Discovery)" : String.join("\n", catalog);
+
+                        // Invoke the reasoning brain (ReactBrain)
+                        String setupResult = invokeAgentMethod(reasoningBrain, "setup",
+                                activity.getGoal(), catalogView, activity.getOpenedManualsView(), history);
+
+                        // 1. Preliminary parsing to extract 'summary' (important for narration)
+                        String summary = "Setup operations executed based on catalog.";
+                        try {
+                            JsonNode preRoot = objectMapper.readTree(cleanJson(setupResult));
+                            if (preRoot.has("summary")) {
+                                summary = preRoot.get("summary").asText();
+                            }
+                        } catch (Exception e) {
+                            logger.warn("⚠️ [SETUP] Could not extract summary from JSON.");
+                        }
+
+                        // 2. Persist this setup step immediately in history so subsequent reasoning sees it
+                        activity.addStep(new ReasoningStep("setup", activity.getGoal(), summary, activity.getBeliefsSnapshot()));
+
+                        // 3. Execute mounting/unmounting logic
+                        try {
+                            JsonNode root = objectMapper.readTree(cleanJson(setupResult));
+
+                            if (root.has("mount_tools")) {
+                                for (JsonNode node : root.get("mount_tools")) {
+                                    String toolName = node.asText();
+                                    ToolManual manual = agentMemory.getManualByName(toolName);
+                                    if (manual != null) {
+                                        activity.openManual(manual);
+                                        logger.info("📖 [SETUP] Mounted: {}", toolName);
+                                    } else {
+                                        logger.warn("⚠️ [SETUP] Requested manual '{}' not found in memory.", toolName);
+                                    }
+                                }
+                            }
+
+                            if (root.has("unmount_tools")) {
+                                for (JsonNode node : root.get("unmount_tools")) {
+                                    String toolName = node.asText();
+                                    activity.closeManual(toolName);
+                                    logger.info("📕 [SETUP] Unmounted: {}", toolName);
+                                }
+                            }
+
+                            // Transition: after setup, return to REASONING with the updated context.
+                            activity.setStatus(Activity.Status.REASONING);
+                            activityQueue.offer(activity);
+
+                        } catch (Exception e) {
+                            logger.error("❌ [SETUP] Parse/Execution Error", e);
+                            // Fallback: return to reasoning to avoid blocking; agent may retry or change strategy
+                            activity.setStatus(Activity.Status.REASONING);
+                            activityQueue.offer(activity);
+                        }
+                    }
+
                     case REASONING -> {
+                        logger.info("🧠 [REASONING] Deciding next step for Goal: '{}'", activity.getGoal());
                         if (activity.hasEvents()) {
-                            logger.info("⚡ Events pending for Activity {} in REASONING phase. Skipping to OBSERVATION.", activityUuid);
                             activity.setStatus(Activity.Status.OBSERVATION);
                             activityQueue.offer(activity);
                             break;
@@ -129,104 +165,113 @@ public class AsyncAgent<T extends ReactBrain> {
                             memoriesText = String.join("\n\n--- MEMORY ---\n", relevantMemories);
                             logger.info("🧠 Found {} relevant memories for reasoning.", relevantMemories.size());
                         }
-                        String reasoningResult = invokeAgentMethod("reason", activity.getGoal(), history, contextJson, progressTracker, memoriesText);
 
-                        Map<String, Object> snapshot = activity.getBeliefsSnapshot();
-                        activity.addStep(new ReasoningStep("reason", activity.getGoal(), reasoningResult, snapshot));
+                        List<String> catalog = agentMemory.searchManualCatalog(activity.getGoal(), 100);
+                        String catalogView = catalog.isEmpty() ? "CATALOG EMPTY (Need Discovery)" : String.join("\n", catalog);
+                        ensureMemoriesLoaded(activity);
+                        String reasoningResult = invokeAgentMethod(reasoningBrain, "reason",
+                                activity.getGoal(), history, contextJson, progressTracker, activity.getOpenedManualsView(), catalogView, memoriesText);
 
-                        activity.setStatus(Activity.Status.ACTION);
-                        logger.info("Activity {} moved to ACTION", activity.getUuid());
-                        activityQueue.offer(activity);
-                    }
-                    case ACTION -> {
+                        activity.addStep(new ReasoningStep("reason", activity.getGoal(), reasoningResult, activity.getBeliefsSnapshot()));
 
-                        String actionResultJson = invokeAgentMethod("act", activity.getGoal(), history, contextJson, progressTracker);
-                        logger.info("🛠️ Action Result: {}", actionResultJson);
-
-                        String toolName = null;
                         try {
-                            String cleanAction = cleanJson(actionResultJson);
-                            JsonNode node = objectMapper.readTree(cleanAction);
-                            if (node.has("tool_name") && !node.get("tool_name").isNull()) {
-                                toolName = node.get("tool_name").asText();
+                            JsonNode resultNode = objectMapper.readTree(cleanJson(reasoningResult));
+                            String decision = resultNode.has("decision") ? resultNode.get("decision").asText().toUpperCase() : "ACT";
+
+                            if (resultNode.has("next_step_description")) {
+                                String instruction = resultNode.get("next_step_description").asText();
+                                logger.info("🧠 [STRATEGY] Locking explicit instruction: \"{}\"", instruction);
+                                activity.setBelief("act_instruction", TextNode.valueOf(instruction));
+                            }
+
+                            logger.info("💡 [REASON] Decision: {} | Thought: ...", decision);
+
+                            switch (decision) {
+                                case "SETUP" -> { activity.setStatus(Activity.Status.SETUP); activityQueue.offer(activity); }
+                                case "ACT" -> { activity.setStatus(Activity.Status.ACTION); activityQueue.offer(activity); }
                             }
                         } catch (Exception e) {
-                            logger.warn("⚠️ Invalid JSON in ACT response: {}", actionResultJson);
-                        }
-
-                        Map<String, Object> snapshot = activity.getBeliefsSnapshot();
-                        activity.addStep(new ReasoningStep("act", activity.getGoal(), actionResultJson, snapshot));
-
-                        if (toolName != null && !toolName.isEmpty() && !toolName.equalsIgnoreCase("null")) {
-                            logger.info("🛠️ Tool Call Detected: '{}'. Checking for immediate events...", toolName);
-                            if (activity.hasEvents()) {
-                                logger.info("⚡ Event arrived DURING action execution! Skipping suspension for Activity {}.", activityUuid);
-                                activity.setStatus(Activity.Status.OBSERVATION);
-                                activityQueue.offer(activity);
-                            } else {
-                                logger.info("💤 Suspending Activity {} (Waiting for future event)", activityUuid);
-                                activity.setStatus(Activity.Status.WAITING_FOR_EVENT);
-                            }
-                        } else {
-                            logger.info("⏩ No Tool Call. Proceeding to OBSERVE immediately.");
-                            activity.setStatus(Activity.Status.OBSERVATION);
+                            activity.setStatus(Activity.Status.ACTION);
                             activityQueue.offer(activity);
                         }
                     }
-                    case OBSERVATION -> {
-                        List<JsonNode> eventsList = activity.consumeEvents();
-                        String eventsJson = "[]";
-                        try {
-                            eventsJson = objectMapper.writeValueAsString(eventsList);
-                        } catch (Exception e) {
-                            logger.warn("Failed to serialize events", e);
-                        }
-                        logger.debug("Serialized events for activity {}: {}", activityUuid, eventsJson);
 
-                        String obsResult = invokeAgentMethod("observe", activity.getGoal(), history, contextJson, eventsJson, progressTracker);
+                    case ACTION -> {
 
-                        // --- 2. UPDATE PROGRESS & VARIABLES ---
-                        try {
-                            String cleanObs = cleanJson(obsResult);
-                            JsonNode obsNode = objectMapper.readTree(cleanObs);
+                        String explicitInstruction = activity.getBelief("act_instruction") != null
+                                ? activity.getBelief("act_instruction").asText()
+                                : "Execute next step.";
 
-                            // A. Update PROGRESS TRACKER
-                            if (obsNode.has("new_progress")) {
-                                String newProgress = obsNode.get("new_progress").asText();
-                                // Save as special TextNode variable
-                                activity.setBelief("goal_progress", TextNode.valueOf(newProgress));
-                                logger.info("📝 PROGRESS UPDATED for {}:\n{}", activityUuid, newProgress);
-                            }
+                        logger.info("🛠️ [ACTION] Executing: {}", explicitInstruction);
 
-                            // B. Update other variables (technical beliefs)
-                            if (obsNode.has("update_variables") && obsNode.get("update_variables").isObject()) {
-                                JsonNode updates = obsNode.get("update_variables");
-                                updates.fields().forEachRemaining(entry -> {
-                                    activity.setBelief(entry.getKey(), entry.getValue());
-                                    logger.info("🧠 Belief Update for {}: {} -> {}", activityUuid, entry.getKey(), entry.getValue());
-                                });
-                            }
-                        } catch (Exception e) { /* ignore non-json */ }
+                        String actionResultJson = invokeAgentMethod(actionBrain, "act",
+                                explicitInstruction, contextJson, progressTracker, activity.getOpenedManualsView());
 
-                        Map<String, Object> snapshot = activity.getBeliefsSnapshot();
-                        activity.addStep(new ReasoningStep("observe", activity.getGoal(), obsResult, snapshot, eventsList));
+                        List<String> learnedNames = ingestManualsFromJson(actionResultJson);
+                        boolean documentationLearned = !learnedNames.isEmpty();
 
-
-
-                        boolean completed = parseCompleted(obsResult);
-                        if (completed) {
-                            activity.setStatus(Activity.Status.COMPLETED);
-                            logger.info("Activity {} marked COMPLETED by observe", activity.getUuid());
+                        String historyResult;
+                        if (documentationLearned) {
+                            historyResult = "SUCCESS: Manuals learned for: " + String.join(", ", learnedNames) +
+                                    ". They are stored in CATALOG. Use SETUP phase to mount/read them.";
                         } else {
-                            activity.setStatus(Activity.Status.REASONING);
-                            logger.info("Activity {} cycled back to REASONING", activity.getUuid());
+                            historyResult = actionResultJson;
+                        }
+                        activity.addStep(new ReasoningStep("act", activity.getGoal(), historyResult, activity.getBeliefsSnapshot()));
+
+                        boolean expectEvent = false;
+                        try {
+                            JsonNode node = objectMapper.readTree(cleanJson(actionResultJson));
+                            if (node.has("expect_event")) expectEvent = node.get("expect_event").asBoolean();
+                        } catch (Exception e) {}
+
+                        if (activity.hasEvents()) {
+                            logger.info("⚡ [ACTION_END] Events arrived during execution. Skipping wait, going to OBSERVATION.");
+                            activity.setStatus(Activity.Status.OBSERVATION);
+                        } else if (documentationLearned) {
+                            logger.info("📚 [FLOW_CONTROL] Manuals learned. Returning to OBSERVATION.");
+                            activity.setStatus(Activity.Status.OBSERVATION);
+                        } else if (expectEvent) {
+                            logger.info("💤 [SUSPEND] Waiting for event...");
+                            activity.setStatus(Activity.Status.WAITING_FOR_EVENT);
+                        } else {
+                            activity.setStatus(Activity.Status.OBSERVATION);
                         }
                         activityQueue.offer(activity);
                     }
+
+                    case OBSERVATION -> {
+                        logger.info("👁️ [OBSERVATION] Analyzing Events for Goal: '{}'", activity.getGoal());
+                        List<JsonNode> eventsList = activity.consumeEvents();
+                        String eventsJson = "[]";
+                        try { eventsJson = objectMapper.writeValueAsString(eventsList); } catch (Exception e) {}
+
+                        if(!eventsList.isEmpty()) logger.info("👀 [OBSERVATION] Processing {} incoming events.", eventsList.size());
+
+                        ensureMemoriesLoaded(activity);
+                        String obsResult = invokeAgentMethod(reasoningBrain, "observe",
+                                activity.getGoal(), history, contextJson, eventsJson, progressTracker, activity.getOpenedManualsView());
+
+                        try {
+                            JsonNode obsNode = objectMapper.readTree(cleanJson(obsResult));
+                            if (obsNode.has("new_progress")) activity.setBelief("goal_progress", TextNode.valueOf(obsNode.get("new_progress").asText()));
+                        } catch (Exception e) {}
+
+                        activity.addStep(new ReasoningStep("observe", activity.getGoal(), obsResult, activity.getBeliefsSnapshot(), eventsList));
+
+                        if (parseCompleted(obsResult)) {
+                            activity.setStatus(Activity.Status.COMPLETED);
+                            activityQueue.offer(activity);
+                        } else {
+                            activity.setStatus(Activity.Status.REASONING);
+                            activityQueue.offer(activity);
+                        }
+                    }
+
                     case COMPLETED -> {
                         logger.info("🎉 Activity {} completed. Starting REFLECTION & MEMORY STORAGE...", activity.getUuid());
                         String fullHistory = extractActivityHistory(activity, 100);
-                        String reflectionJson = invokeAgentMethod("reflect",
+                        String reflectionJson = invokeAgentMethod(reasoningBrain,"reflect",
                                 activity.getGoal(),
                                 "COMPLETED",
                                 fullHistory
@@ -262,24 +307,134 @@ public class AsyncAgent<T extends ReactBrain> {
                         activityRegistry.remove(activity.getUuid());
 
                     }
-                    default -> {
-                        logger.warn("Unknown activity status for {}: {}", activity.getUuid(), status);
+                }
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            catch (Exception e) { logger.error("Loop Error", e); }
+        }
+    }
+
+    private List<String> ingestManualsFromJson(String jsonText) {
+        List<String> savedNames = new ArrayList<>();
+        try {
+            JsonNode root = objectMapper.readTree(cleanJson(jsonText));
+            if (root.has("learned_manuals") && root.get("learned_manuals").isArray()) {
+                JsonNode manualsArray = root.get("learned_manuals");
+                for (JsonNode manual : manualsArray) {
+                    String toolName = manual.has("tool_name") ? manual.get("tool_name").asText() : "";
+                    String content = manual.has("content") ? manual.get("content").asText() : "";
+                    if (!toolName.isBlank() && !content.isBlank()) {
+                        String normalizedName = toolName.trim().toLowerCase().replace(" ", "_");
+                        agentMemory.ingestManual(new ToolManual(normalizedName,
+                                manual.has("description") ? manual.get("description").asText() : "",
+                                content));
+                        savedNames.add(normalizedName);
+                        logger.info("💾 [INGEST_SUCCESS] Saved: '{}'", normalizedName);
                     }
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                logger.info("Event loop interrupted");
-            } catch (Exception e) {
-                logger.error("Error while processing activity", e);
             }
+        } catch (Exception e) { logger.warn("⚠️ Ingest parse failed."); }
+        return savedNames;
+    }
+
+    private void startSseListener() {
+        logger.info("🎧 Starting Async SSE Listener on {}", sseUrl);
+        HttpClient client = HttpClient.newHttpClient();
+        HttpRequest request = HttpRequest.newBuilder().uri(URI.create(sseUrl)).header("Accept", "text/event-stream").build();
+        client.sendAsync(request, HttpResponse.BodyHandlers.fromLineSubscriber(new Flow.Subscriber<String>() {
+            private Flow.Subscription sub;
+            @Override public void onSubscribe(Flow.Subscription sub) { this.sub = sub; sub.request(1); }
+            @Override public void onNext(String line) {
+                if (line.startsWith("data:")) handleMcpEvent(line.substring(5).trim());
+                sub.request(1);
+            }
+            @Override public void onError(Throwable t) { logger.error("❌ SSE Error", t); }
+            @Override public void onComplete() { logger.info("✅ SSE Stream Closed"); }
+        }));
+    }
+
+    private void handleMcpEvent(String json) {
+        try {
+            if (json.isEmpty() || json.equals("[DONE]")) return;
+            JsonNode root = objectMapper.readTree(json);
+            JsonNode params = root.has("params") ? root.get("params") : root;
+            String msgUuid = params.has("uuid") ? params.get("uuid").asText() : null;
+            if (msgUuid == null) return;
+            Activity targetActivity = activityRegistry.get(msgUuid);
+            if (targetActivity == null) return;
+
+            String mcpType = params.has("mcpType") ? params.get("mcpType").asText() : "";
+            if ("variable".equalsIgnoreCase(mcpType)) {
+                targetActivity.setBelief(params.get("name").asText(), params.get("value"));
+                logger.info("🔁 Belief update: {} -> {}", params.get("name").asText(), params.get("value"));
+            } else if ("event".equalsIgnoreCase(mcpType)) {
+                JsonNode payload = params.has("event") ? params.get("event") : params;
+                targetActivity.pushEvent(payload);
+                logger.info("📥 Event received: {}", payload);
+                if (targetActivity.getStatus() == Activity.Status.WAITING_FOR_EVENT) {
+                    targetActivity.setStatus(Activity.Status.OBSERVATION);
+                    activityQueue.offer(targetActivity);
+                    logger.info("🔔 WAKING UP Activity {} -> Resumed to OBSERVATION", msgUuid);
+                }
+            }
+        } catch (Exception e) { logger.error("MCP Event Error", e); }
+    }
+
+    private String invokeAgentMethod(Object targetInstance, String methodName, Object... args) {
+        try {
+            Method target = null;
+            for (Method m : targetInstance.getClass().getMethods()) {
+                if (m.getName().equalsIgnoreCase(methodName) && m.getParameterCount() == args.length) {
+                    target = m;
+                    break;
+                }
+            }
+            if (target == null) return "";
+            Object result;
+            if (args.length == 0) result = target.invoke(targetInstance);
+            else result = target.invoke(targetInstance, args);
+            String resStr = result == null ? "" : result.toString();
+            logger.info("🛑 [RAW_LLM_OUTPUT] Method: {} | Result len: {}\n>>> {}", methodName, resStr.length(), resStr);
+            return resStr;
+        } catch (Exception e) {
+            logger.error("❌ Invoke Error: " + methodName, e);
+            return "";
         }
-        logger.info("🛑 Agent event loop stopped");
     }
 
 
 
+    private String cleanJson(String response) {
+        if (response == null || response.isBlank()) return "{}";
 
+        try {
+            int start = response.indexOf("{");
+            int end = response.lastIndexOf("}");
 
+            if (start != -1 && end != -1 && end > start) {
+                return response.substring(start, end + 1);
+            }
+        } catch (Exception e) {
+            logger.warn("⚠️ [JSON_CLEAN_FAIL] Failed to extract JSON from: {}", response);
+        }
+        logger.info("🔍 [JSON_CLEAN] Returning original response as fallback: {}", response.trim());
+        return response.trim();
+    }
+    private String buildContextJson(Activity activity) {
+        try {
+            Map<String,Object> c=new HashMap<>();
+            c.put("uuid", activity.getUuid());
+            c.put("artifacts_state", activity.getBeliefsSnapshot());
+            return objectMapper.writeValueAsString(c);
+        } catch(Exception e){return "{}";}
+    }
+    private String extractProgressTracker(Activity a) { JsonNode n=a.getBelief("goal_progress"); return n!=null?n.asText():"(No plan)"; }
+    private String extractActivityHistory(Activity a, int w) {
+        StringBuilder sb=new StringBuilder();
+        List<ReasoningStep> h=a.getHistory();
+        int s=Math.max(0,h.size()-w);
+        for(int i=s;i<h.size();i++) sb.append(h.get(i).toJson()).append("\n");
+        return sb.toString();
+    }
     private boolean parseCompleted(String obsResult) {
         if (obsResult == null || obsResult.isBlank()) return false;
 
@@ -311,175 +466,15 @@ public class AsyncAgent<T extends ReactBrain> {
 
         return false;
     }
-
-    private String invokeAgentMethod(String methodName, Object... args) {
-        try {
-            Method target = null;
-            for (Method m : agentBrain.getClass().getMethods()) {
-                if (m.getName().equalsIgnoreCase(methodName) && m.getParameterCount() == args.length) {
-                    target = m;
-                    break;
-                }
-            }
-            if (target == null) {
-                for (Method m : agentBrain.getClass().getMethods()) {
-                    if (m.getName().equalsIgnoreCase(methodName)) {
-                        target = m;
-                        break;
-                    }
-                }
-            }
-            if (target == null) {
-                logger.debug("Agent brain has no method '{}'", methodName);
-                return "";
-            }
-
-            Object result;
-            int paramCount = target.getParameterCount();
-            if (paramCount == 0) {
-                result = target.invoke(agentBrain);
-            } else {
-                Object[] invokeArgs = args;
-                if (args.length != paramCount) {
-                    invokeArgs = new Object[paramCount];
-                    for (int i = 0; i < Math.min(args.length, paramCount); i++) {
-                        invokeArgs[i] = args[i];
-                    }
-                    for (int i = args.length; i < paramCount; i++) {
-                        invokeArgs[i] = null;
-                    }
-                }
-                result = target.invoke(agentBrain, invokeArgs);
-            }
-            return result == null ? "" : result.toString();
-        } catch (Exception e) {
-            logger.error("Failed to invoke agent method '{}'", methodName, e);
-            return "";
+    private void ensureMemoriesLoaded(Activity a) {
+        if(!a.areMemoriesLoaded()) {
+            a.addMemories(agentMemory.retrieveRelevantMemories(a.getGoal(), 2));
+            a.setMemoriesLoaded(true);
         }
     }
 
-    public void shutdown() {
-        loopRunning.set(false);
-        executor.shutdownNow();
-    }
-
-    private void startSseListener() {
-        logger.info("🎧 Starting Async SSE Listener on {}", sseUrl);
-        HttpClient client = HttpClient.newHttpClient();
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(sseUrl))
-                .header("Accept", "text/event-stream")
-                .build();
-
-        client.sendAsync(request, HttpResponse.BodyHandlers.fromLineSubscriber(new Flow.Subscriber<String>() {
-            private Flow.Subscription sub;
-            @Override public void onSubscribe(Flow.Subscription sub) { this.sub = sub; sub.request(1); }
-            @Override public void onNext(String line) {
-                if (line.startsWith("data:")) {
-                    String json = line.substring(5).trim();
-                    if (!json.isEmpty() && !json.equals("[DONE]") && json.contains("{")) {
-                        logger.debug("📡 SSE Event: {}", json);
-                        handleMcpEvent(json);
-                    }
-                }
-                sub.request(1);
-            }
-            @Override public void onError(Throwable t) { logger.error("❌ SSE Error", t); }
-            @Override public void onComplete() { logger.info("✅ SSE Stream Closed"); }
-        }));
-    }
-
-    private void handleMcpEvent(String json) {
-        try {
-            JsonNode root = objectMapper.readTree(json);
-            JsonNode params = root.has("params") ? root.get("params") : root;
-
-            String mcpType = null;
-            if (params.has("mcpType")) {
-                mcpType = params.get("mcpType").asText();
-            }
-            String msgUuid = params.has("uuid") ? params.get("uuid").asText() : "global";
-            if (msgUuid == null) {
-                logger.warn("Received MCP message without UUID, ignoring: {}", params);
-                return;
-            }
-            Activity targetActivity = activityRegistry.get(msgUuid);
-            if (targetActivity == null) {
-                logger.debug("Received message for unknown or completed activity: {}", msgUuid);
-                return;
-            }
-            if ("variable".equalsIgnoreCase(mcpType)) {
-                String name = null;
-                if (params.has("name")) name = params.get("name").asText();
-                else if (params.has("key")) name = params.get("key").asText();
-                else name = "var_" + UUID.randomUUID();
-
-                JsonNode value = params.has("value") ? params.get("value") : NullNode.getInstance();
-
-                targetActivity.setBelief(name, value);
-                logger.info("🔁 Belief stored in Activity {}: {} -> {}", msgUuid, name, value);
-                return;
-            }
-
-            if ("event".equalsIgnoreCase(mcpType)) {
-                JsonNode eventPayload = null;
-                if (params.has("payload")) eventPayload = params.get("payload");
-                else if (params.has("event")) eventPayload = params.get("event");
-                else eventPayload = params;
-
-                if (eventPayload.has("event") && eventPayload.get("event").isObject() && !eventPayload.has("key")) {
-                    eventPayload = eventPayload.get("event");
-                }
-
-                targetActivity.pushEvent(eventPayload);
-                logger.info("📥 Event pushed to Activity {}: {}", msgUuid, eventPayload);
-
-                if (targetActivity.getStatus() == Activity.Status.WAITING_FOR_EVENT) {
-                    targetActivity.setStatus(Activity.Status.OBSERVATION);
-                    activityQueue.offer(targetActivity);
-                    logger.info("🔔 WAKING UP Activity {} -> Resumed to OBSERVATION", msgUuid);
-                } else {
-                    logger.debug("Event received for {} but activity is busy ({}). Event queued inside activity.", msgUuid, targetActivity.getStatus());
-                }
-                return;
-            }
-
-            logger.info("⚪ Ignored MCP message (not event/variable): {}", params);
-
-        } catch (Exception e) {
-            logger.error("Failed to handle MCP event", e);
-        }
-    }
-
-    private String cleanJson(String response) {
-        if (response == null) return "{}";
-        String trimmed = response.trim();
-
-        // Remove markdown blocks ```json ... ``` or ``` ... ```
-        if (trimmed.startsWith("```")) {
-            int start = trimmed.indexOf("{");
-            int end = trimmed.lastIndexOf("}");
-            if (start != -1 && end != -1) {
-                return trimmed.substring(start, end + 1);
-            }
-        }
-        return trimmed;
-    }
-
-    private String extractActivityHistory(Activity activity, int windowSize) {
-        StringBuilder historyBuilder = new StringBuilder();
-        List<ReasoningStep> steps = activity.getHistory();
-        int start = Math.max(0, steps.size() - windowSize);
-        for (int i = start; i < steps.size(); i++) {
-            ReasoningStep step = steps.get(i);
-            historyBuilder.append(step.toJson()).append("\n");
-        }
-        return historyBuilder.toString();
-    }
-
-    public T brain() {
-        return agentBrain;
-    }
+    public T brain () { return this.reasoningBrain; }
+    public T actionBrain () { return this.actionBrain; }
 
     public static class Builder<T extends ReactBrain> {
         private ChatModel model;
@@ -488,40 +483,12 @@ public class AsyncAgent<T extends ReactBrain> {
         private ArrayList<Document> documents;
         private McpToolProvider mcpToolProvider;
         private String sseUrl;
-
-
-        public Builder<T> model(ChatModel model) {
-            this.model = model;
-            return this;
-        }
-
-
-
-        public Builder<T> agentInterface(Class<T> agentInterface) {
-            this.agentInterface = agentInterface;
-            return this;
-        }
-
-        public Builder<T> mcpToolProvider(McpToolProvider provider) {
-            this.mcpToolProvider = provider;
-            return this;
-        }
-
-        public Builder<T> sseUrl(String url) {
-            this.sseUrl = url;
-            return this;
-        }
-
-        public Builder<T> tools(Object... tools) {
-            this.tools = tools;
-            return this;
-        }
-
-        public Builder<T> documents(ArrayList<Document> documents) {
-            this.documents = documents;
-            return this;
-        }
-
+        public Builder<T> model(ChatModel model) { this.model = model; return this; }
+        public Builder<T> agentInterface(Class<T> agentInterface) { this.agentInterface = agentInterface; return this; }
+        public Builder<T> mcpToolProvider(McpToolProvider provider) { this.mcpToolProvider = provider; return this; }
+        public Builder<T> sseUrl(String url) { this.sseUrl = url; return this; }
+        public Builder<T> tools(Object... tools) { this.tools = tools; return this; }
+        public Builder<T> documents(ArrayList<Document> documents) { this.documents = documents; return this; }
         public AsyncAgent<T> build() {
             Objects.requireNonNull(model, "model must not be null");
             Objects.requireNonNull(agentInterface, "agentInterface must not be null");
