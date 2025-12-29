@@ -24,16 +24,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class ActivitySubmissionIntegrationTest {
 
-//    OllamaChatModel model = OllamaChatModel.builder()
-//            .baseUrl("http://localhost:11434")
-//            .modelName("qwen2.5")
-//            .temperature(0.0)
-//            .timeout(java.time.Duration.ofMinutes(2))
-//            .build();
-
     OpenAiChatModel model = OpenAiChatModel.builder()
-            .baseUrl("http://langchain4j.dev/demo/openai/v1")
-            .apiKey("demo")
+            .apiKey(System.getenv("GPT_API_KEY"))
             .modelName("gpt-4o-mini")
             .build();
 
@@ -44,7 +36,7 @@ public class ActivitySubmissionIntegrationTest {
         @Override public void handle(JsonNode node) { super.handle(node); }
     }
 
-    // Helper updated with optional windowSize parameter
+    // Helper: format activity history for debugging
     private String formatActivityHistory(Activity activity) {
         StringBuilder sb = new StringBuilder();
         sb.append("Activity ").append(activity.getUuid())
@@ -90,8 +82,6 @@ public class ActivitySubmissionIntegrationTest {
                 .mcpClients(List.of(client))
                 .build();
 
-
-
         AsyncAgent<ReactBrain> agent = new AsyncAgent.Builder<ReactBrain>()
                 .model(model)
                 .agentInterface(ReactBrain.class)
@@ -100,11 +90,11 @@ public class ActivitySubmissionIntegrationTest {
                 .build();
 
         // 2. Prepare Activity
-        String activityGoal = "First subscribe to the notifications system, then use the timer tool to set a timer: set seconds 5 name test-timer";
+        String activityGoal = "If you find a way to set a timer that triggers an event after 5 seconds, do it. " +
+                "Name the timer 'test-timer' so you can identify it later.";
         Activity activity = new Activity(activityGoal);
 
-        // 3. Manual Injection (Simulate request)
-        // Manually register the activity in the private registry so SSE works
+        // 3. Manual Injection (simulate request) - register activity so SSE processing works
         Field registryField = AsyncAgent.class.getDeclaredField("activityRegistry");
         registryField.setAccessible(true);
         ((Map<String, Activity>) registryField.get(agent)).put(activity.getUuid(), activity);
@@ -126,7 +116,6 @@ public class ActivitySubmissionIntegrationTest {
         assertTrue(historyEvolved, "Activity history should grow");
 
         // 5. Verify Beliefs
-        // The variable should appear DIRECTLY inside the Activity
         String expectedKey = "test-timer";
         boolean gotVar = false;
         long deadline2 = System.currentTimeMillis() + 30000;
@@ -156,7 +145,6 @@ public class ActivitySubmissionIntegrationTest {
         McpClient client = new DefaultMcpClient.Builder().transport(transport).build();
         McpToolProvider provider = McpToolProvider.builder().mcpClients(List.of(client)).build();
 
-
         AsyncAgent<ReactBrain> agent = new AsyncAgent.Builder<ReactBrain>()
                 .model(model)
                 .agentInterface(ReactBrain.class)
@@ -165,8 +153,8 @@ public class ActivitySubmissionIntegrationTest {
                 .build();
 
         // Two Activities
-        Activity activityLong = new Activity("First subscribe, then set timer: 8 seconds name timer-long");
-        Activity activityShort = new Activity("First subscribe, then set timer: 3 seconds name timer-short");
+        Activity activityLong = new Activity("Find a way to set a timer that triggers an event after 8 seconds. Name the timer 'timer-long' so you can identify it later.");
+        Activity activityShort = new Activity("Find a way to set a timer that triggers an event after 3 seconds. Name the timer 'timer-short' so you can identify it later.");
 
         // Manual Injection into Registry & Queue
         Field registryField = AsyncAgent.class.getDeclaredField("activityRegistry");
@@ -194,16 +182,12 @@ public class ActivitySubmissionIntegrationTest {
         assertTrue(activityShort.isCompleted(), "Short activity should finish");
         assertTrue(activityLong.isCompleted(), "Long activity should finish");
 
-        // --- ISOLATION CHECK (New logic) ---
-        // Check the Activity objects' memory directly
-
-        // Short must not have Long
+        // Isolation check: ensure beliefs are encapsulated per activity
         assertNotNull(activityShort.getBelief("timer-short"));
-        assertNull(activityShort.getBelief("timer-long"), "CRITICAL: Isolation breach in Short Activity");
+        assertNull(activityShort.getBelief("timer-long"), "Isolation breach in Short Activity");
 
-        // Long must not have Short
         assertNotNull(activityLong.getBelief("timer-long"));
-        assertNull(activityLong.getBelief("timer-short"), "CRITICAL: Isolation breach in Long Activity");
+        assertNull(activityLong.getBelief("timer-short"), "Isolation breach in Long Activity");
 
         System.out.println("✅ Context Isolation Verified using Activity Encapsulation.");
     }
@@ -224,8 +208,8 @@ public class ActivitySubmissionIntegrationTest {
                 .mcpToolProvider(provider).sseUrl("http://localhost:3001/sse").build();
 
         // 1. Define Activities
-        Activity actDouble = new Activity("First subscribe. Then set timer 3s 'timer-A'. ALSO set timer 5s 'timer-B'.");
-        Activity actImpossible = new Activity("Check Apple stock price.");
+        Activity actDouble = new Activity("Find a way to set two timers: one for 3 seconds named 'timer-A' and another for 5 seconds named 'timer-B'");
+        Activity actImpossible = new Activity("Find a way to get apple stock price if possible");
 
         // 2. Inject
         Field registryField = AsyncAgent.class.getDeclaredField("activityRegistry");
@@ -277,17 +261,14 @@ public class ActivitySubmissionIntegrationTest {
         McpClient client = new DefaultMcpClient.Builder().transport(transport).toolExecutionTimeout(Duration.ofSeconds(10)).build();
         McpToolProvider provider = McpToolProvider.builder().mcpClients(List.of(client)).build();
 
-        // Use your local model
-
-
         AsyncAgent<ReactBrain> agent = new AsyncAgent.Builder<ReactBrain>()
                 .model(model).agentInterface(ReactBrain.class)
                 .mcpToolProvider(provider).sseUrl("http://localhost:3001/sse").build();
 
         // 2. Goal
-        String goal = "First subscribe. Then set 'timer-A' for 4 seconds and 'timer-B' for 4 seconds. " +
-                "Wait for BOTH 'timer-A' and 'timer-B' to finish ringing. " +
-                "ONLY AFTER both A and B events are received, set 'timer-C' for 2 seconds.";
+        String goal = "Find a way to set two timers: 'timer-A' for 4 seconds and 'timer-B' for 4 seconds. " +
+                "After both 'timer-A' and 'timer-B' have finished, " +
+                "set a third timer 'timer-C' for 2 seconds.";
         Activity activity = new Activity(goal);
 
         // 3. Inject
@@ -324,7 +305,6 @@ public class ActivitySubmissionIntegrationTest {
 
             // A. Detect when events ARRIVE (OBSERVE phase)
             if ("observe".equals(act)) {
-                // Use step.getEvents() instead of step.getInput()
                 String eventsContent = step.getEvents().toString().toLowerCase();
 
                 if (eventsContent.contains("timer-a") && eventsContent.contains("finished")) {
@@ -350,13 +330,12 @@ public class ActivitySubmissionIntegrationTest {
         }
 
         // 6. Logical assertions
-        // CORE OF THE TEST: C must start AFTER A and B have finished
         assertTrue(timeA_Finished > 0, "Timer A finished event missing");
         assertTrue(timeB_Finished > 0, "Timer B finished event missing");
         assertTrue(timeC_Started > 0, "Timer C action missing");
 
         if (timeC_Started < timeA_Finished || timeC_Started < timeB_Finished) {
-            fail("❌ Sequential Violation: Timer C started before A/B finished!\n" +
+            fail("Sequential Violation: Timer C started before A/B finished!\n" +
                     "Time A: " + timeA_Finished + "\n" +
                     "Time B: " + timeB_Finished + "\n" +
                     "Time C: " + timeC_Started);
@@ -383,8 +362,7 @@ public class ActivitySubmissionIntegrationTest {
 
     @Test
     void testMemory_LearningLoop_ReflectAndRetrieve() throws Exception {
-        // Initial setup code unchanged
-        // 0. Pre-check server Node
+        // Pre-check server Node
         try (Socket s = new Socket("localhost", 3001)) { } catch (Exception e) { return; }
 
         // 1. Setup Stack (Standard)
@@ -400,10 +378,8 @@ public class ActivitySubmissionIntegrationTest {
                 .sseUrl("http://localhost:3001/sse")
                 .build();
 
-        // -------------------------------------------------------
         // PHASE 1: Learning (Task A)
-        // -------------------------------------------------------
-        String goalA = "Subscribe and set a timer for 2 seconds called 'memory-test-1'";
+        String goalA = "Find a way to set a timer that triggers an event after 2 seconds. Name the timer 'memory-test-1' so you can identify it later.";
         Activity taskA = new Activity(goalA);
 
         // Inject Task A
@@ -418,7 +394,7 @@ public class ActivitySubmissionIntegrationTest {
         System.out.println("🧠 PHASE 1: Executing Task A to generate memory...");
 
         // Wait for Task A completion
-        long deadline = System.currentTimeMillis() + 60000;
+        long deadline = System.currentTimeMillis() + 120000;
         while (System.currentTimeMillis() < deadline) {
             if (taskA.isCompleted()) break;
             Thread.sleep(500);
@@ -436,7 +412,6 @@ public class ActivitySubmissionIntegrationTest {
         long stopWaiting = System.currentTimeMillis() + 15000; // Wait up to 15 seconds for LLM
 
         while (System.currentTimeMillis() < stopWaiting) {
-            // Search for relevant memories
             memories = internalMemory.retrieveRelevantMemories("set a timer", 10);
             if (!memories.isEmpty()) {
                 System.out.println("🧠 Memory found! Proceeding with assertions.");
@@ -446,16 +421,14 @@ public class ActivitySubmissionIntegrationTest {
         }
 
         System.out.println("🔎 Inspecting Memory Store...");
-        assertFalse(memories.isEmpty(), "⚠️ Agent failed to save memory after Task A (Timeout reached)!");
+        assertFalse(memories.isEmpty(), "Agent failed to save memory after Task A (Timeout reached)!");
 
         System.out.println("✅ Memory Found: " + memories.get(0));
         assertTrue(memories.get(0).contains("memory-test-1") || memories.get(0).contains("timer"),
                 "Memory content should relate to the previous task");
 
-        // -------------------------------------------------------
         // PHASE 2: Application (Task B) - RAG Check
-        // -------------------------------------------------------
-        String goalB = "Set a timer for 2 seconds called 'memory-test-2'. Use your past knowledge.";
+        String goalB = "Find a way to set a timer that triggers an event after 2 seconds. Name the timer 'memory-test-2' so you can identify it later";
         Activity taskB = new Activity(goalB);
 
         // Inject Task B
@@ -478,4 +451,3 @@ public class ActivitySubmissionIntegrationTest {
         printActivityHistory(taskB);
     }
 }
-

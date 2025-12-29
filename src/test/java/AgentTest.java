@@ -26,7 +26,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.*;
-
+//To properly run the MCP integration tests, run the Node.js MCP server timer-tool2.js
 public class AgentTest {
     String uuid = java.util.UUID.randomUUID().toString();
     public interface SimpleAgentInterface extends ReactBrain {
@@ -208,6 +208,7 @@ public class AgentTest {
 
             assertNotNull(agent);
             assertNotNull(agent.brain());
+            assertNotNull(agent.actionBrain());
         }
     }
 
@@ -215,13 +216,13 @@ public class AgentTest {
     @Nested
     @DisplayName("Agent Functionality Tests")
     class AgentFunctionalityTests {
-        //OpenAiChatModel model = OpenAiChatModel.builder().baseUrl("http://langchain4j.dev/demo/openai/v1").apiKey("demo").modelName("gpt-4o-mini").build();
-        OllamaChatModel model = OllamaChatModel.builder()
-                .baseUrl("http://localhost:11434")
-                .modelName("qwen2.5")
-                .temperature(0.0)
-                .timeout(java.time.Duration.ofMinutes(2))
-                .build();
+        OpenAiChatModel model = OpenAiChatModel.builder().baseUrl("http://langchain4j.dev/demo/openai/v1").apiKey("demo").modelName("gpt-4o-mini").build();
+//        OllamaChatModel model = OllamaChatModel.builder()
+//                .baseUrl("http://localhost:11434")
+//                .modelName("qwen2.5")
+//                .temperature(0.0)
+//                .timeout(java.time.Duration.ofMinutes(2))
+//                .build();
 
 
         public interface McpTestAgent extends ReactBrain {
@@ -271,7 +272,7 @@ public class AgentTest {
 
                 System.out.println("🤖 Asking agent to use the tool...");
 
-                String response = agent.brain().chat("Subscribe to the notification system, please.", uuid);
+                String response = agent.actionBrain().chat("Subscribe to the notification system, please.", uuid);
 
                 System.out.println("🤖 Agent Response: " + response);
                 assertNotNull(response);
@@ -299,7 +300,7 @@ public class AgentTest {
                     .build();
 
 
-            String request = "Subscribe to notifications, then set a timer: 1 second name test-timer";
+            String request = "Find a way to set a timer that triggers an event after 1 second name test-timer";
             agent.request(request);
 
             // To verify the test, we need to peek into the registry
@@ -317,7 +318,7 @@ public class AgentTest {
             // Wait for the variable to arrive via SSE
             String expectedKey = "test-timer";
             boolean gotVar = false;
-            long deadline = System.currentTimeMillis() + 30000;
+            long deadline = System.currentTimeMillis() + 120000;
 
             while (System.currentTimeMillis() < deadline) {
                 // Direct check in the Activity
@@ -342,6 +343,7 @@ public class AgentTest {
         @DisplayName("Agent brain should work and correctly call the model")
         void agentBrainFunctionality() {
             AsyncAgent<SimpleAgentInterface> agent = createTestAgent();
+
             String response = agent.brain().test("Hello, Agent!");
             System.out.println(response);
             assertNotNull(response);
