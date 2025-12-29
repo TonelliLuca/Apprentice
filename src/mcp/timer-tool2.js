@@ -1,4 +1,3 @@
-
 import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -17,8 +16,8 @@ const pendingNotifications = new Map();
 const timers = new Map();
 
 const server = new McpServer({
-    name: 'timer-server',
-    version: '1.0.0'
+    name: 'timer-artifact',
+    version: '2.0.0'
 });
 
 function now() {
@@ -53,8 +52,60 @@ function flushPendingNotifications() {
 }
 
 // -------------------------
-// TOOL
+// DOCUMENTATION (THE ARTIFACT MANUAL)
 // -------------------------
+const MANUAL_CONTENT = `
+=== MANUAL: TIMER ARTIFACT ===
+Type: Async/Event-Driven Tool
+Tool Name: 'timerTool'
+
+[PROTOCOL & BEHAVIOR]
+1. **FOCUS REQUIRED (Subscribe):** - Before interacting, you MUST establish a connection context.
+   - Action: Call 'timerTool' with parameter { "action": "subscribe" }.
+   - Effect: Enables the reception of asynchronous events (SSE). Without this, you are "blind" to the results.
+
+2. **OPERATION (Set):** is dependent on having FOCUS so refer to step 1 before proceeding.
+   - TO USE THIS FUNCTION YOU MUST HAVE FOCUS ESTABLISHED.
+   - Action: Call 'timerTool' with { "action": "set", "seconds": <number>, "name": <optional_string> }.
+   - Behavior: The tool initiates a countdown in the background.
+   - Immediate Return: Confirming the timer has started (NOT that it has finished).
+
+3. **OBSERVATION (Events):**
+   - You MUST WAIT for the asynchronous event to confirm completion.
+   - Event Name: 'timer.finished'
+   - Payload: Contains the message "⏰ RING! ...".
+
+[SAFETY & ERRORS]
+- Do not set 0 seconds.
+- Ensure UUID is consistent across calls.
+`;
+
+// -------------------------
+// TOOLS
+// -------------------------
+
+// 1. MANUAL RETRIEVAL (Standard discovery tool)
+server.tool(
+    'manual_retrieval',
+    {
+        tool_name: z.string().optional()
+    },
+    async ({ tool_name }) => {
+        log('[MANUAL] Manual requested for:', tool_name || "general");
+
+        if (tool_name && tool_name.toLowerCase().includes("timer")) {
+            return {
+                content: [{ type: 'text', text: MANUAL_CONTENT }]
+            };
+        }
+
+        return {
+            content: [{ type: 'text', text: "ERROR: Manual not found for tool '" + tool_name + "'. Available manuals: timerTool" }]
+        };
+    }
+);
+
+// 2. TIMER TOOL (The functional artifact)
 server.tool(
     'timerTool',
     {
@@ -68,11 +119,11 @@ server.tool(
         log('[TOOL] Called timerTool', { action, seconds, name, uuid, sseConnected: !!sseResponse, subscribedForUuid: subscribedUuids.has(uuid) });
 
         // -------------------------
-        // SUBSCRIBE
+        // SUBSCRIBE (FOCUS ACTION)
         // -------------------------
         if (action === "subscribe") {
             subscribedUuids.add(uuid);
-            log('[TOOL][SUBSCRIBE] UUID subscribed:', uuid, 'sseConnected=', !!sseResponse);
+            log('[TOOL][SUBSCRIBE] UUID subscribed (Focus established):', uuid);
 
             const eventPayloadObj = {
                 jsonrpc: "2.0",
@@ -83,32 +134,26 @@ server.tool(
                     event: {
                         key: "subscription-ack",
                         name: "subscription.started",
-                        message: "Subscription successfully activated via SSE"
+                        message: "Focus established. You will now receive signals via SSE."
                     }
                 }
             };
             const eventPayload = JSON.stringify(eventPayloadObj);
 
             if (sseResponse) {
-                log('[TOOL][SUBSCRIBE] Sending SSE ack immediately for UUID:', uuid);
                 try {
                     sseResponse.write(`data: ${eventPayload}\n\n`);
                 } catch (e) {
-                    log('[TOOL][SUBSCRIBE] Failed to write SSE ack, queuing instead', uuid, e);
                     enqueueNotification(uuid, eventPayload);
                 }
             } else {
-                log('[TOOL][SUBSCRIBE] SSE not connected yet; queuing ack for UUID:', uuid);
                 enqueueNotification(uuid, eventPayload);
             }
 
-            // 4. Risposta standard del Tool (Testo)
-            const msg = {
+            return {
                 uuid,
-                content: [{ type: 'text', text: "✅ Subscription activated. You will receive events and variables via SSE." }]
+                content: [{ type: 'text', text: "✅ FOCUS ESTABLISHED. Subscription active. Ready to set timers." }]
             };
-
-            return msg;
         }
 
         // -------------------------
@@ -116,15 +161,22 @@ server.tool(
         // -------------------------
         if (action === "set") {
             if (!seconds) {
-                log('[TOOL][SET] Error: missing seconds. UUID:', uuid);
                 return { uuid, content: [{ type: 'text', text: "❌ Error: missing seconds." }] };
+            }
+
+            // Check Focus (Optional logic: enforce subscription)
+            if (!subscribedUuids.has(uuid)) {
+                log('[WARN] Request from unsubscribed UUID:', uuid);
+                return { uuid, content: [{ type: 'text', text: "❌ Error: You must establish FOCUS first by subscribing before setting a timer." }] };
+                // We allow it but warn in the log, or we could return an error telling them to subscribe first.
+                // For now, we proceed but they might miss the event if SSE isn't connected.
             }
 
             const id = name ? String(name) : `timer-${randomUUID()}`;
             log('[TOOL][SET] Timer set', { id, seconds, uuid });
 
             const timeoutId = setTimeout(() => {
-                log('[NODE] Timer expired', { id, seconds, uuid, sseConnected: !!sseResponse, subscribedForUuid: subscribedUuids.has(uuid) });
+                log('[NODE] Timer expired', { id, seconds, uuid });
 
                 const eventDataObj = {
                     jsonrpc: "2.0",
@@ -141,32 +193,23 @@ server.tool(
                 };
                 const eventData = JSON.stringify(eventDataObj);
 
+                // Delivery Logic
                 if (sseResponse && subscribedUuids.has(uuid)) {
-                    log('[NODE] Sending SSE event for UUID:', uuid, 'eventKey:', id);
                     try {
                         sseResponse.write(`data: ${eventData}\n\n`);
                     } catch (e) {
-                        log('[NODE] Failed to send SSE event for UUID', uuid, e);
-                        // fallback to queue the event
                         enqueueNotification(uuid, eventData);
                     }
-                } else {
-                    // either SSE not connected or this uuid didn't subscribe => queue only if uuid subscribed
-                    if (subscribedUuids.has(uuid)) {
-                        log('[NODE] SSE not connected - queuing event for UUID:', uuid);
-                        enqueueNotification(uuid, eventData);
-                    } else {
-                        log('[NODE] UUID not subscribed - NOT sending nor queuing event for UUID:', uuid);
-                    }
+                } else if (subscribedUuids.has(uuid)) {
+                    enqueueNotification(uuid, eventData);
                 }
 
                 timers.delete(id);
             }, seconds * 1000);
 
-            // Persist timer info
             timers.set(id, { name: name || id, timeoutId, seconds });
 
-            // Prepare the variable payload that describes the timer
+            // Variable Update Notification
             const varPayloadObj = {
                 jsonrpc: "2.0",
                 method: "notifications/message",
@@ -174,53 +217,25 @@ server.tool(
                     uuid,
                     mcpType: "variable",
                     name: id,
-                    value: { name: name || id, seconds }
+                    value: { name: name || id, seconds, status: "RUNNING" }
                 }
             };
             const varPayload = JSON.stringify(varPayloadObj);
 
-            // Notify variable via SSE if subscribed for this uuid; otherwise queue if subscribed but no SSE
             if (sseResponse && subscribedUuids.has(uuid)) {
-                log('[TOOL][SET] Sending SSE variable for UUID:', uuid, 'key:', id);
-                try {
-                    sseResponse.write(`data: ${varPayload}\n\n`);
-                } catch (e) {
-                    log('[TOOL][SET] Failed to write SSE variable for UUID', uuid, e);
-                    enqueueNotification(uuid, varPayload);
-                }
-            } else {
-                if (subscribedUuids.has(uuid)) {
-                    log('[TOOL][SET] SSE not connected - queuing variable for UUID:', uuid);
-                    enqueueNotification(uuid, varPayload);
-                } else {
-                    log('[TOOL][SET] UUID did NOT subscribe - variable not sent/queued for UUID:', uuid);
-                }
+                try { sseResponse.write(`data: ${varPayload}\n\n`); } catch (e) { enqueueNotification(uuid, varPayload); }
+            } else if (subscribedUuids.has(uuid)) {
+                enqueueNotification(uuid, varPayload);
             }
 
-            // Tool response (pure text) — include JSON payload in one text element so callers that parse it can use it
-            const response = {
+            return {
                 uuid,
                 content: [
-                    { type: 'text', text: `⏳ Timer ${id} started for ${seconds} seconds.` },
-                    {
-                        type: 'text',
-                        // also include the uuid inside the JSON payload so callers that parse it can see it
-                        text: JSON.stringify({
-                            uuid,
-                            mcpType: "variable",
-                            name: id,
-                            value: { name: name || id, seconds }
-                        })
-                    }
+                    { type: 'text', text: `⏳ Timer ${id} started (${seconds}s). Waiting for event...` }
                 ]
             };
-
-            log('[TOOL][RESPONSE] Returning tool response for UUID:', uuid, 'response content:', response.content.map(c => (c.text ? c.text : c)));
-            return response;
         }
 
-        // fallback
-        log('[TOOL] Unknown action', action);
         return { uuid, content: [{ type: 'text', text: "Unknown action" }] };
     }
 );
@@ -233,7 +248,6 @@ app.post('/mcp', async (req, res) => {
         sessionIdGenerator: undefined,
         enableJsonResponse: true
     });
-
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
 });
@@ -243,37 +257,23 @@ app.post('/mcp', async (req, res) => {
 // -------------------------
 app.get('/sse', (req, res) => {
     log("[NODE] New SSE client connected");
-
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
     sseResponse = res;
-    log('[SSE] SSE stream established. subscribedUuidsCount=', subscribedUuids.size);
     res.write(": connected\n\n");
-
-    // When a client connects, flush queued notifications for subscribed UUIDs
     flushPendingNotifications();
 
     req.on('close', () => {
         log("[NODE] SSE client disconnected");
         sseResponse = null;
-        // do not clear subscribedUuids: subscriptions are per-UUID and persist until explicitly removed
     });
 });
 
 const PORT = 3001;
-
-const httpServer = app.listen(PORT, () => {
-    log(`🚀 Timer Server running on port ${PORT}`);
-    log(`👉 POST http://localhost:${PORT}/mcp`);
-    log(`👉 GET  http://localhost:${PORT}/sse`);
+app.listen(PORT, () => {
+    log(`🚀 Timer Artifact running on port ${PORT}`);
+    log(`👉 Manuals available via 'manual_retrieval'`);
 });
-
-httpServer.on('error', (error) => {
-    log("❌ HTTP ERROR:", error);
-});
-
-process.on('uncaughtException', err => log('❌ Uncaught Exception:', err));
-process.on('unhandledRejection', r => log('❌ Unhandled Rejection:', r));
