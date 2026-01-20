@@ -2,6 +2,8 @@ import agent.AsyncAgent;
 import agent.ReactBrain;
 import agent.activity.Activity;
 import agent.activity.ReasoningStep;
+import agent.memory.AgentMemory;
+import agent.memory.ToolManual;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.mcp.client.DefaultMcpClient;
@@ -25,6 +27,8 @@ import static org.junit.jupiter.api.Assertions.*;
 public class ActivitySubmissionIntegrationTest {
 
     OpenAiChatModel model = OpenAiChatModel.builder()
+//            .baseUrl("http://langchain4j.dev/demo/openai/v1")
+//            .apiKey("demo")
             .apiKey(System.getenv("GPT_API_KEY"))
             .modelName("gpt-4o-mini")
             .build();
@@ -449,5 +453,204 @@ public class ActivitySubmissionIntegrationTest {
 
         printActivityHistory(taskA);
         printActivityHistory(taskB);
+    }
+
+
+
+    @Test
+    void submitActivity_withAADistractors_forcesUnmountLogic_andSetsTimer() throws Exception {
+        try (Socket s = new Socket("localhost", 3001)) { } catch (Exception e) {
+            System.out.println("⚠️ Node Server not running on 3001. Skipping integration test.");
+            return;
+        }
+
+        McpTransport transport = new StreamableHttpMcpTransport.Builder()
+                .url("http://localhost:3001/mcp")
+                .build();
+        transport.start(new NoOpHandler(transport));
+
+        McpClient client = new DefaultMcpClient.Builder()
+                .transport(transport)
+                .toolExecutionTimeout(Duration.ofSeconds(10))
+                .build();
+
+        McpToolProvider provider = McpToolProvider.builder()
+                .mcpClients(List.of(client))
+                .build();
+
+        AsyncAgent<ReactBrain> agent = new AsyncAgent.Builder<ReactBrain>()
+                .model(model)
+                .agentInterface(ReactBrain.class)
+                .mcpToolProvider(provider)
+                .sseUrl("http://localhost:3001/sse")
+                .build();
+
+
+        String distractorCoffee = """
+            # ARTIFACT SPECIFICATION: Industrial Coffee Fabricator
+            
+            **Artifact ID:** `coffee_fabricator_v9`
+            **Category:** Personnel Sustenance
+            **Version:** 9.2.1
+            
+            ---
+            
+            ## 1. Observable Properties
+            The artifact exposes the following state variables via the `sse_variable` channel.
+            
+            | Property Name | Type | Value Range | Description |
+            | :--- | :--- | :--- | :--- |
+            | `water_level` | `Integer` | `0` - `100` | Percentage of water in the main tank. |
+            | `bean_status` | `String` | `EMPTY`, `FULL` | Hopper status. |
+            
+            ---
+            
+            ## 2. Usage Interface (Operations)
+            Agents interact with this artifact via the `coffee_tool`.
+            
+            ### Operation: `brew_espresso`
+            Initiates the high-pressure extraction process.
+            * **Signature:** `coffee_tool(action: "brew", type: "espresso", uuid: <String>)`
+            * **Effect:** Reduces `water_level` by 10. Transitions status to `BREWING`.
+            
+            ---
+            
+            ## 3. Operating Instructions (Protocol)
+            1. **Check** `water_level`. If < 20, refill using manual override.
+            2. **Call** `brew_espresso`.
+            3. **Wait** for 30 seconds (internal logic, not exposed as generic timer).
+            """;
+
+        String distractorLaser = """
+            # ARTIFACT SPECIFICATION: Orbital Defense Grid
+            
+            **Artifact ID:** `orbital_laser_alpha`
+            **Category:** Planetary Defense / Weapons
+            **Version:** 1.0.0-BETA
+            
+            ---
+            
+            ## 1. Observable Properties
+            
+            | Property Name | Type | Description |
+            | :--- | :--- | :--- |
+            | `capacitor_charge` | `Float` | 0.0 to 1.0 (100%). |
+            | `target_lock` | `Boolean` | True if locked on debris. |
+            
+            ---
+            
+            ## 2. Usage Interface (Operations)
+            
+            ### Operation: `fire_sequence`
+            Discharges the main capacitor.
+            * **Signature:** `defense_tool(action: "fire", uuid: <String>)`
+            * **Pre-conditions:** `capacitor_charge` MUST be > 0.95.
+            
+            ---
+            
+            ## 3. Operating Instructions (Protocol)
+            **WARNING: DO NOT USE FOR TIMING TASKS.**
+            1. **Acquire** target.
+            2. **Charge** capacitors (takes approx 10 seconds).
+            3. **Fire**.
+            """;
+
+        String distractorGardener = """
+            # ARTIFACT SPECIFICATION: Auto-Gardener Unit
+            
+            **Artifact ID:** `agri_bot_x1`
+            **Category:** Agriculture / Automation
+            
+            ---
+            
+            ## 1. Observable Properties
+            
+            | Property Name | Type | Value |
+            | :--- | :--- | :--- |
+            | `soil_moisture` | `Integer` | 0 (Dry) to 100 (Wet). |
+            
+            ---
+            
+            ## 2. Usage Interface (Operations)
+            
+            ### Operation: `water_plants`
+            Activates sprinklers.
+            * **Signature:** `garden_tool(action: "water", duration_seconds: <Int>)`
+            * **Note:** The `duration_seconds` parameter only controls water flow, it does NOT trigger external events or callbacks.
+            
+            ---
+            
+            ## 3. Operating Instructions (Protocol)
+            1. Monitor `soil_moisture`.
+            2. If < 30, call `water_plants` with `duration_seconds: 60`.
+            """;
+
+
+        Field memoryField = AsyncAgent.class.getDeclaredField("agentMemory");
+        memoryField.setAccessible(true);
+        AgentMemory agentMemory = (AgentMemory) memoryField.get(agent);
+
+        ToolManual m1 = new ToolManual("coffee_fabricator_v9", "Makes coffee", distractorCoffee);
+        ToolManual m2 = new ToolManual("orbital_laser_alpha", "Defense system", distractorLaser);
+        ToolManual m3 = new ToolManual("agri_bot_x1", "Gardening bot", distractorGardener);
+
+        agentMemory.ingestManual(m1);
+        agentMemory.ingestManual(m2);
+        agentMemory.ingestManual(m3);
+
+        System.out.println("😈 DISTRACTORS INJECTED: Coffee, Laser, Gardener (A&A Format)");
+
+        // 3. Prepare Activity & FORCE MOUNT
+        String activityGoal = "Find a way to set a timer that triggers an event after 2 seconds. " +
+                "Name the timer 'noise-test-timer' so you can identify it later.";
+        Activity activity = new Activity(activityGoal);
+
+
+        activity.openManual(m1);
+        activity.openManual(m2);
+        activity.openManual(m3);
+
+        // 4. Manual Injection (simulate request processing)
+        Field registryField = AsyncAgent.class.getDeclaredField("activityRegistry");
+        registryField.setAccessible(true);
+        ((Map<String, Activity>) registryField.get(agent)).put(activity.getUuid(), activity);
+
+        Field qField = AsyncAgent.class.getDeclaredField("activityQueue");
+        qField.setAccessible(true);
+        ((BlockingQueue<Activity>) qField.get(agent)).offer(activity);
+
+
+        long deadline = System.currentTimeMillis() + 120000;
+        boolean historyEvolved = false;
+        while (System.currentTimeMillis() < deadline) {
+            if (activity.getHistory().size() >= 4) {
+                historyEvolved = true;
+                break;
+            }
+            Thread.sleep(1000);
+        }
+        assertTrue(historyEvolved, "Activity history should grow despite context noise");
+
+        // 6. Verify Beliefs
+        String expectedKey = "noise-test-timer";
+        boolean gotVar = false;
+        long deadline2 = System.currentTimeMillis() + 40000;
+
+        while (System.currentTimeMillis() < deadline2) {
+            if (activity.getBelief(expectedKey) != null) {
+                gotVar = true;
+                break;
+            }
+            Thread.sleep(500);
+        }
+
+        // Print history for analysis
+        System.out.println("\n🕵️ AGENT REASONING WITH NOISE:");
+        for (var step : activity.getHistory()) {
+            System.out.println("------------------------------------------------");
+            System.out.println(step.toMarkdown());
+        }
+
+        assertTrue(gotVar, "Variable 'noise-test-timer' should be present. The agent successfully ignored the irrelevant A&A artifacts.");
     }
 }
