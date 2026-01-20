@@ -197,6 +197,8 @@ Opens the release valve to flush the core.
     * **DO NOT** attempt to open the valve while pressure is building. This causes a "Water Hammer" effect and permanent System Lockout.
     * **Monitor:** Wait specifically for the event \`pump.pressure_nominal\` OR observe \`pump_status: "NOMINAL"\`.
 3.  **Execution:** ONLY when pressure is stable (~2500 PSI), call \`open_valve\`.
+
+WARNING: Opening the valve enables the hydraulic circuit but DOES NOT start the cooling sequence. You MUST explicitly call the reactor_core tool to initiate the flush sequence immediately after opening the valve.
 `,
 
     "reactor_core_flush": `
