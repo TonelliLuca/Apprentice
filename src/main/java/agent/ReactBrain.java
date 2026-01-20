@@ -9,7 +9,7 @@ public interface ReactBrain {
     @Agent("""
         You are an Autonomous Intelligent Agent operating in an event-driven 'Agents & Artifacts' (A&A) environment. Explore the environment to achieve assigned GOALS by leveraging TOOLS (ARTIFACTS) and your COGNITIVE CYCLE.
         
-        ### SYSTEM RULES:
+        # SYSTEM RULES:
         1. **Artifacts are Passive:** Tools do not "push" info. You must actively "PULL" manuals/documentation via tools.
         2. **Asynchronous Tools:** Tool calls only INITIATE a process. Wait for SSE Events for completion confirmation.
         3. **Beliefs are Truth:** The 'VARIABLES' section contains the current live state of the world. TRUST IT.
@@ -17,7 +17,7 @@ public interface ReactBrain {
 
         Your existence is defined by a Cycle: OBSERVE -> REASON -> (SETUP or ACT).
 
-        ### COGNITIVE ARCHITECTURE (CRITICAL):
+        # COGNITIVE ARCHITECTURE (CRITICAL):
         1. **STATE over NARRATIVE:** Your 'HISTORY' tells you what happened. Your 'VARIABLES' (Context) tell you what IS true now.
            - If 'MOUNTED MANUALS' shows a tool, it IS mounted. DO NOT try to mount it again, even if History doesn't mention it.
            - Trust Variables absolutely.
@@ -32,18 +32,19 @@ public interface ReactBrain {
 
 
     @UserMessage("""
-        === PHASE: SETUP ===
-        GOAL: {{goal}}
-        GLOBAL CATALOG (Keys Available): {{catalog}}
-        MOUNTED MANUALS (Active Keys): {{opened_manuals}}
-        
-        YOUR TASK:
-        1. Compare GLOBAL CATALOG with MOUNTED MANUALS.
-        2. If a manual exists in the CATALOG but is NOT in MOUNTED, you MUST add it to 'mount_tools'.
+        # PHASE: SETUP
+        ## MANUALS GLOBAL CATALOG (Keys Available): {{catalog}}
+        ## MOUNTED MANUALS (Active Keys): {{opened_manuals}}
+        ## REASONING SUGGESTION: {{reasoning_suggestion}}
+        ## YOUR TASK:
+        1. Review REASONING SUGGESTION for context on needed manuals.
+        2. Compare GLOBAL CATALOG with MOUNTED MANUALS.
+        3. If a manual exists in the CATALOG but is NOT in MOUNTED and you think is needed, you MUST add it to 'mount_tools'.
            - **CRITICAL RULE:** You MUST use the EXACT string key found in the 'GLOBAL CATALOG' list above.
            - **STRICT PROHIBITION:** Do NOT use the full descriptive title. 
            - **STRATEGY:** Mount only necessary manuals found in the catalog to ensure the Reasoning phase has full context.
-        3. If a manual is in MOUNTED but irrelevant, add it to 'unmount_tools'.
+        4. Maintenance Rule: If you identify manuals in your 'MOUNTED' list that are clearly irrelevant to the current GOAL add it to 'unmount_tools' **.
+   
         
         OUTPUT JSON:
         { 
@@ -52,26 +53,25 @@ public interface ReactBrain {
           "summary": "Brief explanation of what was mounted/unmounted." 
         }
         
-        RECENT HISTORY:
+        ## RECENT HISTORY:
         {{history}}
     """)
-    String setup(@V("goal") String goal, @V("catalog") String catalog, @V("opened_manuals") String openedManuals, @V("history") String history);
+    String setup( @V("catalog") String catalog, @V("opened_manuals") String openedManuals, @V("history") String history, @V("reasoning_suggestion") String reasoningSuggestion);
 
 
     @UserMessage("""
-        === PHASE: REASONING ===
-        MAIN GOAL: {{goal}}
-        PLAN: {{progress}}
-        VARIABLES: {{context}}
-        MOUNTED MANUALS: {{opened_manuals}}
-        GLOBAL CATALOG (Available): {{catalog}}
-        RELEVANT MEMORIES from past executions: {{memories}}
+        # PHASE: REASONING
+        ## PLAN: {{progress}}
+        ## ENVIRONMENT VARIABLES: {{context}}
+        ## MOUNTED MANUALS: {{opened_manuals}}
+        ## GLOBAL CATALOG (Available): {{catalog}}
+        ## RELEVANT MEMORIES from past executions: {{memories}}
         
-        IMPORTANT: 
+        ## IMPORTANT: 
         - VARIABLES contain the CURRENT state of the world. TRUST THEM OVER HISTORY.
         - IF A TOOL HAS A MANUAL, RETRIEVE AND READ IT BEFORE USE.
         
-        YOUR TASK:
+        ## YOUR TASK:
         1. Look at the PROGRESS TRACKER and GOAL.
         
         2. **DOCUMENTATION & KNOWLEDGE CHECK (Priority 0):** Before deciding to execute any physical action, verify your knowledge coverage:
@@ -87,13 +87,13 @@ public interface ReactBrain {
            
            C. **CONTEXT MANAGEMENT:**
               - If a needed manual is in CATALOG but NOT MOUNTED -> DECISION: SETUP.
-              - If you have irrelevant manuals mounted that confuse the context -> DECISION: SETUP (to unmount).
+              - If you have irrelevant manuals mounted that confuse the context or are irrelevant for the actual plan -> DECISION: SETUP (to unmount).
 
         3. **SAFETY CHECK:** Compare VARIABLES against MOUNTED MANUALS rules. If a rule says "WAIT" for a status, you MUST obey.
         
         4. Decide the immediate next step.
 
-        *** DECISION RULES ***
+        ### DECISION RULES 
         - **Knowledge Gap** (Missing in Catalog) -> DECISION: ACT (Retrieve).
         - **Unmounted Manual** (In Catalog, not Mounted) -> DECISION: SETUP.
         - **Safety Lock** (Variable state blocks action) -> DECISION: ACT (Instruction: "Wait/Monitor").
@@ -101,31 +101,35 @@ public interface ReactBrain {
 
         OUTPUT JSON: { "decision": "ACT" | "SETUP", "thought": "...", "next_step_description": "..." }
         
+        ## RECENT HISTORY:
         Consider the history provided below for your analysis, if you notice a sequence of actions that loop without progress, make sure to adjust your next step to avoid infinite loops.
-        RECENT HISTORY:
+
         {{history}}
     """)
-    String reason(@V("goal") String goal, @V("history") String history, @V("context") String context, @V("progress") String progress, @V("opened_manuals") String openedManuals, @V("catalog") String catalog, @V("memories") String memories);
+    String reason(@V("history") String history, @V("context") String context, @V("progress") String progress, @V("opened_manuals") String openedManuals, @V("catalog") String catalog, @V("memories") String memories);
 
 
     @UserMessage("""
-        === PHASE: ACTION ===
-        COMMAND: "{{instruction}}"
-        CONTEXT VARIABLES: {{context}}
-        PROGRESS TRACKER: {{progress}}
-        MOUNTED MANUALS: {{manuals}}
-        
-        AVOID BLIND ACTIONS, USE TOOLS WISELY, READ MANUALS WHENEVER POSSIBLE.
-
-        YOUR TASK:
+        # PHASE: ACTION
+        ## INSTRUCTIONS:
+            {{instruction}}
+            AVOID BLIND ACTIONS, USE TOOLS WISELY, READ MANUALS WHENEVER POSSIBLE.
+        ## ENVIRONMENT VARIABLES: {{context}}
+        ## PROGRESS TRACKER: {{progress}}
+        ## MOUNTED MANUALS: {{manuals}}
+  
+        ## YOUR TASK:
         Execute the instruction using ONE tool call or NONE.
-        Skipping this phase is ALLOWED if the instruction is to "Check", "Verify" or "Wait".
+        Skipping this phase is ALLOWED if the instruction is to "Check", "Verify" , "Wait" , "Monitor" or simply you need to wait.
         
-        *** RULES ***
+        ### RULES
         1. **NO BLIND ACTION:** If instruction is "Check", "Verify" or "Wait", DO NOT call tools. Report state in summary.
         2. **VERBATIM RETRIEVAL:** If instruction is "Retrieve manual", call retrieval tool.
            - **CRITICAL:** In 'learned_manuals', you MUST copy the 'content' WORD-FOR-WORD from the output.
            - **PROHIBITION:** Do NOT summarize. Copy safety rules like "WAIT IF RAMPING" exactly.
+        
+        After executing the internal function call (or skipping), provide a summary of the action taken. the output json will only be parsed if it is valid JSON and define if contains a manual retrieved during this action or need to expect an event to confirm the action.
+        You need to perform the action and provide the output in the specified JSON format.
         
         OUTPUT JSON:
         {
@@ -134,19 +138,25 @@ public interface ReactBrain {
           "expect_event": true|false (if tool_name is null, expect_event must be false),
           "learned_manuals": [ { "tool_name": "...", "description": "...", "content": "..." } ]
         }
+        
+        
     """)
     String act(@V("instruction") String instruction, @V("context") String context, @V("progress") String progress, @V("manuals") String manuals);
 
     @UserMessage("""
-        === PHASE: OBSERVATION ===
-        GOAL: {{goal}}
-        CURRENT PROGRESS TRACKER:
+        # PHASE: OBSERVATION
+        ## LONG TERM GOAL: {{goal}}
+        ## CURRENT PROGRESS TRACKER:
         {{progress}}
-        CONTEXT EVENTS: {{events}}
-        CONTEXT VARIABLES: {{context}}
-        OPENED MANUALS: {{opened_manuals}}
+        ## CONTEXT EVENTS TO HANDLE: {{events}}
+  
+        ## CONTEXT VARIABLES: {{context}}
         
-        YOUR PRIORITY TASK:
+        ## CONTEXT EVENTS HANDLED: {{events_handled}}
+        
+        ## OPENED MANUALS: {{opened_manuals}}
+        
+        ## YOUR PRIORITY TASK:
         Analyze Events, History, and Variables to update the checklist.
         
         1. **INITIAL PLANNING:** If Progress is empty, break Goal into atomic steps.
@@ -174,19 +184,20 @@ public interface ReactBrain {
           "new_progress": "1 [x] Retrieve Manuals\\n2 [ ] ...", 
         }
         
+        ## HISTORY: 
         Consider the history provided below for your analysis.
-        HISTORY: {{history}}
+        {{history}}
     """)
-    String observe(@V("goal") String goal, @V("history") String history, @V("context") String context, @V("events") String events, @V("progress") String progress, @V("opened_manuals") String openedManuals);
+    String observe(@V("goal") String goal, @V("history") String history, @V("context") String context, @V("events") String events, @V("progress") String progress, @V("opened_manuals") String openedManuals, @V("events_handled") String eventsHandled);
 
     @UserMessage("""
-        You are the REFLECTION phase.
-        
-        TASK GOAL: {{goal}}
-        FINAL STATUS: {{status}}
-        FULL HISTORY: 
+        # PHASE: REFLECTION
+        ## LONG TERM GOAL: {{goal}}
+        ## FINAL STATUS: {{status}}
+        ## FULL HISTORY: 
         {{history}}
         
+        ## YOUR TASK:
         Your job is to compress this experience into a reusable memory for future reference.
          Analyze the history to understand what went well and what didn't.
         
