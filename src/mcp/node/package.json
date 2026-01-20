@@ -6,7 +6,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node async-mcp-server.js",
-    "timer": "node timer-tool2.js"
+    "timer": "node timer-tool2.js",
+    "water-hammer": "node water-hammer.js",
+    "counter": "node shared-counter.js"
   },
   "keywords": [],
   "author": "",
