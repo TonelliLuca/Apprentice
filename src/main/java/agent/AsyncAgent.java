@@ -424,7 +424,7 @@ public class AsyncAgent<T extends ReactBrain> {
     private String buildContextMarkdown(Activity activity) {
         StringBuilder sb=new StringBuilder();
         sb.append("- **Activity ID (UUID):** ").append(activity.getUuid()).append("\n\n");
-        sb.append("```\n").append(activity.getBeliefsSnapshotToXml()).append("\n```\n");
+        sb.append("```\n").append(activity.getBeliefsSnapshotToMarkdown()).append("\n```\n");
         return sb.toString();
     }
 
