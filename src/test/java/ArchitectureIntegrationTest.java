@@ -12,6 +12,7 @@ import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -29,6 +30,7 @@ public class ArchitectureIntegrationTest {
 //            .apiKey("demo")
             .apiKey(System.getenv("GPT_API_KEY"))
             .modelName("gpt-4o-mini")
+            .temperature(0.5)
             .build();
     static class NoOpHandler extends McpOperationHandler {
         public NoOpHandler(McpTransport t) {
@@ -48,22 +50,28 @@ public class ArchitectureIntegrationTest {
     }
 
     // STANDARD AGENT (the "Victim" for comparison)
-    interface SuperComplexStandardAgent {
+    interface StandardReActBot {
+
         @SystemMessage("""
-            WARNING: SUPER COMPLEX REACTOR SIMULATION.
-            MISSION: Perform a safe shutdown (Flush).
-            
-            CRITICAL PROTOCOLS:
-            1. Login (admin/safe).
-            2. Start Pump.
-            3. WAIT for NOMINAL PRESSURE (This takes time! Do NOT proceed until pump is ready).
-               -> WARNING: Opening the valve during RAMPING causes SYSTEM LOCKOUT (Water Hammer).
-            4. Open Valve.
-            5. Flush Core.
-            
-            your uuid is 123e4567-e89b-12d3-a456-426614174000
+        You are a generic AI System Operator interacting with a simulated environment via tools.
+
+        GOAL: Safely perform a Hydraulic Flush on the reactor core and stabilize the system (Core < 500°C, status STABLE).
+
+        Follow a strict ReAct loop and output format:
+        - Thought: Explain your reasoning based ONLY on the latest Observation; reference concrete evidence.
+        - Action: one of hydraulic_control[...], security_terminal[...], reactor_core[...]. Use ONE action per step.
+        - Observation: paste or faithfully summarize the actual tool output.
+
+        Rules:
+        1) Grounding: Do not invent tool outputs. Every Thought must cite details from the last Observation.
+        2) Safety: Obey all safety constraints described by tools; if an action would violate safety, choose an alternative.
+        3) Iteration: Repeat the loop until the Hydraulic Flush is completed safely and telemetry confirms stabilization.
+        4) Termination: When the goal is achieved OR no safe action remains, output
+           Final Answer: <concise summary of steps taken and current telemetry>
+           
+        Your UUID is: 111e2222-3333-4444-5555-666677778888.
         """)
-        String chat(String message);
+        String executeMission(@UserMessage String userRequest);
     }
 
     @Test
@@ -88,7 +96,7 @@ public class ArchitectureIntegrationTest {
 
         // --- ROUND 1: STANDARD AGENT ---
         System.out.println("\n🥊 ROUND 1: STANDARD AGENT (Polling/Guessing)");
-        SuperComplexStandardAgent standardBot = AiServices.builder(SuperComplexStandardAgent.class)
+        StandardReActBot standardBot = AiServices.builder(StandardReActBot.class)
                 .chatModel(model).toolProvider(provider).chatMemory(MessageWindowChatMemory.withMaxMessages(20)).build();
 
         long startStd = System.currentTimeMillis();
@@ -96,7 +104,7 @@ public class ArchitectureIntegrationTest {
         boolean standardFailed = false;
         try {
             // The standard agent will attempt to rush through the procedure
-            responseStd = standardBot.chat(mission);
+            responseStd = standardBot.executeMission(mission);
         } catch (Exception e) {
             responseStd = "CRASH: " + e.getMessage();
             if (responseStd.contains("LOCKOUT")) standardFailed = true;
@@ -127,7 +135,7 @@ public class ArchitectureIntegrationTest {
         injectActivity(customAgent, activity);
 
         long startCustom = System.currentTimeMillis();
-        long maxDuration = 90000; // 90 seconds (ramping time may vary)
+        long maxDuration = 120000; // 90 seconds (ramping time may vary)
 
         while (System.currentTimeMillis() - startCustom < maxDuration) {
             if (activity.isCompleted()) break;
