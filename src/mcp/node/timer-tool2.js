@@ -54,30 +54,54 @@ function flushPendingNotifications() {
 // -------------------------
 // DOCUMENTATION (THE ARTIFACT MANUAL)
 // -------------------------
-const MANUAL_CONTENT = `
-=== MANUAL: TIMER ARTIFACT ===
-Type: Async/Event-Driven Tool
-Tool Name: 'timerTool'
+const TIMER_MANUAL = `
+# ARTIFACT SPECIFICATION: Temporal Timer System
 
-[PROTOCOL & BEHAVIOR]
-1. **FOCUS REQUIRED (Subscribe):** - Before interacting, you MUST establish a connection context.
-   - Action: Call 'timerTool' with parameter { "action": "subscribe" }.
-   - Effect: Enables the reception of asynchronous events (SSE). Without this, you are "blind" to the results.
+**Artifact ID:** \`timer_artifact\`
+**Category:** Chronometry / Process Control
+**Version:** 2.0.0
 
-2. **OPERATION (Set):** is dependent on having FOCUS so refer to step 1 before proceeding.
-   - TO USE THIS FUNCTION YOU MUST HAVE FOCUS ESTABLISHED.
-   - Action: Call 'timerTool' with { "action": "set", "seconds": <number>, "name": <optional_string> }.
-   - Behavior: The tool initiates a countdown in the background.
-   - Immediate Return: Confirming the timer has started (NOT that it has finished).
+---
 
-3. **OBSERVATION (Events):**
-   - You MUST WAIT for the asynchronous event to confirm completion.
-   - Event Name: 'timer.finished'
-   - Payload: Contains the message "⏰ RING! ...".
+## 1. Observable Properties
+The artifact exposes the following state variables via the \`sse_variable\` channel.
 
-[SAFETY & ERRORS]
-- Do not set 0 seconds.
-- Ensure UUID is consistent across calls.
+| Property Name | Type | Value Range | Description |
+| :--- | :--- | :--- | :--- |
+| \`timer_status\` | \`String\` | \`RUNNING\`, \`COMPLETED\` | The lifecycle state of the requested timer. |
+
+---
+
+## 2. Usage Interface (Operations)
+Agents interact with this artifact via the \`timer_tool\`.
+
+### Operation: \`start\`
+Initiates a countdown and **automatically subscribes** the agent to artifact events.
+
+* **Signature:** \`timer_tool(action: "start", seconds: <Integer>, uuid: <String>)\`
+* **Effect:**
+    1. Subscribes the \`uuid\` to the SSE channel.
+    2. Sets \`timer_status\` to \`RUNNING\`.
+    3. Starts the internal countdown.
+* **Asynchronous Behavior:** This action returns immediately. The process is **NON-BLOCKING**.
+
+### Operation: \`check\`
+Verifies artifact connectivity and subscription status without starting a timer.
+
+* **Signature:** \`timer_tool(action: "check", uuid: <String>)\`
+* **Effect:** Ensures the \`uuid\` is subscribed to SSE updates.
+
+---
+
+## 3. Operating Instructions (Protocol)
+**PROTOCOL: ASYNCHRONOUS WAIT**
+
+1.  **Action:** Call \`start\` with the desired duration (e.g., 5 seconds).
+2.  **Wait Phase:** Immediately enter a \`WAITING_FOR_EVENT\` state.
+    * **DO NOT** poll via \`check\`.
+    * **DO NOT** expect a countdown (e.g., "4s left", "3s left"). The artifact is silent while running.
+3.  **Completion:** Wait specifically for the SSE event \`timer_done\`.
+    * Payload example: \`{"message": "Timer finished", "duration": 5}\`.
 `;
 
 // -------------------------
@@ -95,7 +119,7 @@ server.tool(
 
         if (tool_name && tool_name.toLowerCase().includes("timer")) {
             return {
-                content: [{ type: 'text', text: MANUAL_CONTENT }]
+                content: [{ type: 'text', text: TIMER_MANUAL }]
             };
         }
 
