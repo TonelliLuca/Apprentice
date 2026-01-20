@@ -13,6 +13,7 @@ import dev.langchain4j.agentic.AgenticServices;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.model.chat.ChatModel;
+import org.apache.commons.logging.Log;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,23 +84,24 @@ public class AsyncAgent<T extends ReactBrain> {
                     activityQueue.offer(activity);
                     continue;
                 }
-
                 Activity.Status status = activity.getStatus();
-                String history = extractActivityHistory(activity, WINDOW_SIZE);
-                String contextJson = buildContextJson(activity);
-                String progressTracker = extractProgressTracker(activity);
+                String history = extractActivityHistoryMarkdown(activity, WINDOW_SIZE);
+                String contextJson = buildContextMarkdown(activity);
+                String progressTracker = extractProgressTrackerMarkdown(activity);
 
                 switch (status) {
                     case SETUP -> {
                         logger.info("🔧 [SETUP] Assessing Manual Needs for Goal: '{}'", activity.getGoal());
-
+                        String explicitInstruction = activity.getBelief("act_instruction") != null
+                                ? activity.getBelief("act_instruction").asText()
+                                : "No explicit instruction provided.";
                         // Retrieve the current manual catalog
                         List<String> catalog = agentMemory.searchManualCatalog(activity.getGoal(), 100);
                         String catalogView = catalog.isEmpty() ? "CATALOG EMPTY (Need Discovery)" : String.join("\n", catalog);
 
-                        // Invoke the reasoning brain (ReactBrain)
-                        String setupResult = invokeAgentMethod(reasoningBrain, "setup",
-                                activity.getGoal(), catalogView, activity.getOpenedManualsView(), history);
+                        logger.debug(" [SETUP] calling the brain with catalog:\n{}, history:\n{}, context:\n{}, progress:\n{}, instruction:\n{}",
+                                catalogView, history, contextJson, progressTracker, explicitInstruction);
+                        String setupResult = this.reasoningBrain.setup( catalogView, activity.getOpenedManualsNames(), history, explicitInstruction);
 
                         // 1. Preliminary parsing to extract 'summary' (important for narration)
                         String summary = "Setup operations executed based on catalog.";
@@ -169,9 +171,9 @@ public class AsyncAgent<T extends ReactBrain> {
                         List<String> catalog = agentMemory.searchManualCatalog(activity.getGoal(), 100);
                         String catalogView = catalog.isEmpty() ? "CATALOG EMPTY (Need Discovery)" : String.join("\n", catalog);
                         ensureMemoriesLoaded(activity);
-                        String reasoningResult = invokeAgentMethod(reasoningBrain, "reason",
-                                activity.getGoal(), history, contextJson, progressTracker, activity.getOpenedManualsView(), catalogView, memoriesText);
-
+                        logger.debug(" [REASONING] calling the brain with catalog:\n{}, history:\n{}, context:\n{}, progress:\n{}, memories:\n{}",
+                                catalogView, history, contextJson, progressTracker, memoriesText);
+                        String reasoningResult = this.reasoningBrain.reason( history, contextJson, progressTracker, activity.getOpenedManualsView(), catalogView, memoriesText);
                         activity.addStep(new ReasoningStep("reason", activity.getGoal(), reasoningResult, activity.getBeliefsSnapshot()));
 
                         try {
@@ -189,6 +191,12 @@ public class AsyncAgent<T extends ReactBrain> {
                             switch (decision) {
                                 case "SETUP" -> { activity.setStatus(Activity.Status.SETUP); activityQueue.offer(activity); }
                                 case "ACT" -> { activity.setStatus(Activity.Status.ACTION); activityQueue.offer(activity); }
+
+                                default -> {
+                                    logger.warn("❓ [REASON] Unknown decision '{}'. Defaulting to ACTION.", decision);
+                                    activity.setStatus(Activity.Status.ACTION);
+                                    activityQueue.offer(activity);
+                                }
                             }
                         } catch (Exception e) {
                             activity.setStatus(Activity.Status.ACTION);
@@ -200,13 +208,13 @@ public class AsyncAgent<T extends ReactBrain> {
 
                         String explicitInstruction = activity.getBelief("act_instruction") != null
                                 ? activity.getBelief("act_instruction").asText()
-                                : "Execute next step.";
+                                : "No explicit instruction provided.";
 
                         logger.info("🛠️ [ACTION] Executing: {}", explicitInstruction);
 
-                        String actionResultJson = invokeAgentMethod(actionBrain, "act",
-                                explicitInstruction, contextJson, progressTracker, activity.getOpenedManualsView());
-
+                        logger.debug(" [ACTION] calling the brain with history:\n{}, context:\n{}, progress:\n{}, instruction:\n{}",
+                                history, contextJson, progressTracker, explicitInstruction);
+                        String actionResultJson = this.actionBrain.act(explicitInstruction, contextJson, progressTracker, activity.getOpenedManualsView());
                         List<String> learnedNames = ingestManualsFromJson(actionResultJson);
                         boolean documentationLearned = !learnedNames.isEmpty();
 
@@ -245,13 +253,12 @@ public class AsyncAgent<T extends ReactBrain> {
                         List<JsonNode> eventsList = activity.consumeEvents();
                         String eventsJson = "[]";
                         try { eventsJson = objectMapper.writeValueAsString(eventsList); } catch (Exception e) {}
-
                         if(!eventsList.isEmpty()) logger.info("👀 [OBSERVATION] Processing {} incoming events.", eventsList.size());
 
                         ensureMemoriesLoaded(activity);
-                        String obsResult = invokeAgentMethod(reasoningBrain, "observe",
-                                activity.getGoal(), history, contextJson, eventsJson, progressTracker, activity.getOpenedManualsView());
-
+                        logger.debug(" [OBSERVATION] calling the brain with history:\n{}, context:\n{}, events:\n{}, progress:\n{}",
+                                history, contextJson, eventsJson, progressTracker);
+                        String obsResult = this.reasoningBrain.observe(activity.getGoal(), history, contextJson, eventsJson, progressTracker, activity.getOpenedManualsView(), activity.getHandledEventsToMarkdown());
                         try {
                             JsonNode obsNode = objectMapper.readTree(cleanJson(obsResult));
                             if (obsNode.has("new_progress")) activity.setBelief("goal_progress", TextNode.valueOf(obsNode.get("new_progress").asText()));
@@ -271,11 +278,10 @@ public class AsyncAgent<T extends ReactBrain> {
                     case COMPLETED -> {
                         logger.info("🎉 Activity {} completed. Starting REFLECTION & MEMORY STORAGE...", activity.getUuid());
                         String fullHistory = extractActivityHistory(activity, 100);
-                        String reflectionJson = invokeAgentMethod(reasoningBrain,"reflect",
-                                activity.getGoal(),
+
+                        String reflectionJson = this.reasoningBrain.reflect(activity.getGoal(),
                                 "COMPLETED",
-                                fullHistory
-                        );
+                                fullHistory);
                         if (reflectionJson != null && !reflectionJson.isBlank()) {
                             try {
                                 String cleanJson = cleanJson(reflectionJson);
@@ -338,8 +344,17 @@ public class AsyncAgent<T extends ReactBrain> {
 
     private void startSseListener() {
         logger.info("🎧 Starting Async SSE Listener on {}", sseUrl);
-        HttpClient client = HttpClient.newHttpClient();
-        HttpRequest request = HttpRequest.newBuilder().uri(URI.create(sseUrl)).header("Accept", "text/event-stream").build();
+
+
+        HttpClient client = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .build();
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(sseUrl))
+                .header("Accept", "text/event-stream")
+                .build();
+
         client.sendAsync(request, HttpResponse.BodyHandlers.fromLineSubscriber(new Flow.Subscriber<String>() {
             private Flow.Subscription sub;
             @Override public void onSubscribe(Flow.Subscription sub) { this.sub = sub; sub.request(1); }
@@ -379,28 +394,6 @@ public class AsyncAgent<T extends ReactBrain> {
         } catch (Exception e) { logger.error("MCP Event Error", e); }
     }
 
-    private String invokeAgentMethod(Object targetInstance, String methodName, Object... args) {
-        try {
-            Method target = null;
-            for (Method m : targetInstance.getClass().getMethods()) {
-                if (m.getName().equalsIgnoreCase(methodName) && m.getParameterCount() == args.length) {
-                    target = m;
-                    break;
-                }
-            }
-            if (target == null) return "";
-            Object result;
-            if (args.length == 0) result = target.invoke(targetInstance);
-            else result = target.invoke(targetInstance, args);
-            String resStr = result == null ? "" : result.toString();
-            logger.info("🛑 [RAW_LLM_OUTPUT] Method: {} | Result len: {}\n>>> {}", methodName, resStr.length(), resStr);
-            return resStr;
-        } catch (Exception e) {
-            logger.error("❌ Invoke Error: " + methodName, e);
-            return "";
-        }
-    }
-
 
 
     private String cleanJson(String response) {
@@ -423,11 +416,25 @@ public class AsyncAgent<T extends ReactBrain> {
         try {
             Map<String,Object> c=new HashMap<>();
             c.put("uuid", activity.getUuid());
-            c.put("artifacts_state", activity.getBeliefsSnapshot());
+            c.put("environment", activity.getBeliefsSnapshot());
             return objectMapper.writeValueAsString(c);
         } catch(Exception e){return "{}";}
     }
+
+    private String buildContextMarkdown(Activity activity) {
+        StringBuilder sb=new StringBuilder();
+        sb.append("- **Activity ID (UUID):** ").append(activity.getUuid()).append("\n\n");
+        sb.append("```\n").append(activity.getBeliefsSnapshotToXml()).append("\n```\n");
+        return sb.toString();
+    }
+
     private String extractProgressTracker(Activity a) { JsonNode n=a.getBelief("goal_progress"); return n!=null?n.asText():"(No plan)"; }
+    private String extractProgressTrackerMarkdown(Activity a) {
+        String progress=extractProgressTracker(a);
+        StringBuilder sb=new StringBuilder();
+        sb.append("```\n").append(progress).append("\n```\n");
+        return sb.toString();
+    }
     private String extractActivityHistory(Activity a, int w) {
         StringBuilder sb=new StringBuilder();
         List<ReasoningStep> h=a.getHistory();
@@ -435,6 +442,22 @@ public class AsyncAgent<T extends ReactBrain> {
         for(int i=s;i<h.size();i++) sb.append(h.get(i).toJson()).append("\n");
         return sb.toString();
     }
+
+    private String extractActivityHistoryMarkdown(Activity activity, int windowSize) {
+        StringBuilder sb = new StringBuilder();
+        List<ReasoningStep> history = activity.getHistory();
+        int start = Math.max(0, history.size() - windowSize);
+
+        for (int i = start; i < history.size(); i++) {
+            ReasoningStep step = history.get(i);
+            sb.append(step.toMarkdown()).append("\n");
+        }
+        return sb.toString();
+    }
+
+
+
+
     private boolean parseCompleted(String obsResult) {
         if (obsResult == null || obsResult.isBlank()) return false;
 
