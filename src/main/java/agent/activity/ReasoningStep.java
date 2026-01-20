@@ -74,6 +74,28 @@ public class ReasoningStep {
         return sb.toString();
     }
 
+    public String toMarkdown() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("### Reasoning Step - ").append(timestamp).append("\n\n");
+        sb.append("- **Action:** ").append(action).append("\n");
+        sb.append("- **Result:** ").append(result).append("\n");
+        return sb.toString();
+    }
+
+    private String getBeliefsToMarkdown() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\n");
+        boolean first = true;
+        for (Map.Entry<String, Object> e : beliefsSnapshot.entrySet()) {
+            if (!first) sb.append(",\n");
+            first = false;
+            sb.append("  \"").append(escape(e.getKey())).append("\": ");
+            String valStr = String.valueOf(e.getValue());
+            sb.append(valStr);
+        }
+        sb.append("\n}");
+        return sb.toString();
+    }
     private String beliefsToJson() {
         StringBuilder sb = new StringBuilder();
         sb.append("{");

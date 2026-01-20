@@ -2,9 +2,11 @@ package agent.activity;
 
 import agent.memory.ToolManual;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -22,6 +24,7 @@ public class Activity {
     private final Map<String, String> openedManuals = new HashMap<>();
 
     private final List<JsonNode> incomingEvents = new CopyOnWriteArrayList<>();
+    private final List<JsonNode> handledEvents = new CopyOnWriteArrayList<>();
     private final Set<String> loadedMemories = new LinkedHashSet<>();
     private boolean memoriesLoaded = false;
 
@@ -58,8 +61,10 @@ public class Activity {
         return String.join("\n\n", openedManuals.values());
     }
 
-    public Set<String> getOpenedManualsNames() {
-        return openedManuals.keySet();
+    public String getOpenedManualsNames() {
+        if (openedManuals.isEmpty()) return "NO MANUALS OPENED.";
+        return String.join(", ", openedManuals.keySet());
+
     }
 
     public Optional<ReasoningStep> lastStep() { if (history.isEmpty()) return Optional.empty(); return Optional.of(history.get(history.size() - 1)); }
@@ -80,6 +85,16 @@ public class Activity {
         sb.append("]}");
         return sb.toString();
     }
+
+    public String getHandledEventsToMarkdown() {
+        if (handledEvents.isEmpty()) return "_No events handled yet._";
+        StringBuilder sb = new StringBuilder();
+        for (JsonNode event : handledEvents) {
+            sb.append("- `").append(event.toPrettyString().replace("`", "\\`")).append("`\n");
+        }
+        return sb.toString();
+    }
+
     private String beliefsToJson() {
         StringBuilder sb = new StringBuilder("{");
         boolean first = true;
@@ -92,16 +107,68 @@ public class Activity {
         return sb.toString();
     }
 
+
+
+    public String getBeliefsSnapshotToMarkdown() {
+        if (beliefs.isEmpty()) return "_No beliefs stored._";
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, JsonNode> entry : beliefs.entrySet()) {
+            String key = entry.getKey();
+            if ("goal_progress".equals(key) || "act_instruction".equals(key)) continue;
+            sb.append("- **").append(escape(key)).append("**: ");
+            sb.append("`").append(entry.getValue().toPrettyString().replace("`", "\\`")).append("`\n");
+        }
+        sb.append("- **actual timestamp**: `").append(Instant.now().toString()).append("`\n");
+        return sb.toString();
+    }
+
+    /**
+     * Return the beliefs snapshot formatted as XML.
+     * Similar rules to getBeliefsSnapshotToMarkdown: skips "goal_progress" and "act_instruction".
+     */
+    public String getBeliefsSnapshotToXml() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<beliefs>\n");
+        if (!beliefs.isEmpty()) {
+            for (Map.Entry<String, JsonNode> entry : beliefs.entrySet()) {
+                String key = entry.getKey();
+                if ("goal_progress".equals(key) || "act_instruction".equals(key)) continue;
+                sb.append("  <\"").append(key).append("\">")
+                        .append(entry.getValue().toPrettyString())
+                        .append("  </\"").append(key).append("\">");
+            }
+        } else {
+            sb.append("  <!-- No beliefs stored -->\n");
+        }
+        sb.append("  <actual_timestamp>").append(Instant.now().toString()).append("</actual_timestamp>\n");
+        sb.append("</beliefs>");
+        return sb.toString();
+    }
+
+
+
     private String escape(String s) {
         if (s == null) return "";
         return s.replace("\"", "\\\"");
     }
     public void pushEvent(JsonNode event) { incomingEvents.add(event); }
-    public List<JsonNode> consumeEvents() { List<JsonNode> c = new ArrayList<>(incomingEvents); incomingEvents.clear(); return c; }
+
+    public List<JsonNode> consumeEvents() {
+        List<JsonNode> c = new ArrayList<>(incomingEvents);
+        this.handledEvents.addAll(c);
+        incomingEvents.clear();
+        return c;
+    }
+
     public boolean hasEvents() { return !incomingEvents.isEmpty(); }
     public void setBelief(String key, JsonNode value) { if (value != null) beliefs.put(key, value); }
     public JsonNode getBelief(String key) { return beliefs.get(key); }
-    public Map<String, Object> getBeliefsSnapshot() { return new HashMap<>(beliefs); }
+    public Map<String, Object> getBeliefsSnapshot() {
+        Map<String, Object> snapshot = new HashMap<>();
+        snapshot.putAll(beliefs);
+        snapshot.put("actual timestamp", TextNode.valueOf(Instant.now().toString()));
+        return snapshot;
+    }
     public String getUuid() { return uuid.toString(); }
     public String getGoal() { return goal; }
     public Status getStatus() { return status; }
