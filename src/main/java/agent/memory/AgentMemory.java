@@ -36,17 +36,21 @@ public class AgentMemory {
     }
 
     public void ingestManual(ToolManual manual) {
-        if (manualRegistry.containsKey(manual.getToolName())) {
-            logger.info("♻️ [MEMORY_UPDATE] Updating existing Manual for: '{}'", manual.getToolName());
+        String normalizedName = manual.getToolName().trim().toLowerCase();
+
+        if (manualRegistry.containsKey(normalizedName)) {
+            logger.info("♻️ [MEMORY_UPDATE] Updating existing Manual for: '{}'. Removing old vector...", normalizedName);
+
+            embeddingStore.removeAll(metadataKey("tool_name").isEqualTo(normalizedName));
         } else {
-            logger.info("💾 [MEMORY_INGEST] NEW Manual Learned: '{}' -> Saving to Registry & VectorStore.", manual.getToolName());
+            logger.info("💾 [MEMORY_INGEST] NEW Manual Learned: '{}' -> Saving to Registry & VectorStore.", normalizedName);
         }
 
-        manualRegistry.put(manual.getToolName(), manual);
+        manualRegistry.put(normalizedName, manual);
 
         Metadata metadata = new Metadata();
         metadata.put(KEY_TYPE, TYPE_MANUAL_CATALOG);
-        metadata.put("tool_name", manual.getToolName());
+        metadata.put("tool_name", normalizedName);
 
         TextSegment segment = TextSegment.from(manual.toCatalogEntry(), metadata);
         Embedding embedding = embeddingModel.embed(segment).content();
@@ -79,7 +83,8 @@ public class AgentMemory {
     }
 
     public ToolManual getManualByName(String toolName) {
-        ToolManual m = manualRegistry.get(toolName);
+        String normalized = toolName.trim().toLowerCase();
+        ToolManual m = manualRegistry.get(normalized);
         if (m != null) {
             logger.debug("✅ [RETRIEVAL_HIT] Found Full Manual for '{}' in Registry.", toolName);
         } else {
