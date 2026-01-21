@@ -158,16 +158,19 @@ public interface ReactBrain {
         
         ## YOUR PRIORITY TASK:
         Analyze Events, History, and Variables to update the checklist.
-        
-        1. **INITIAL PLANNING:** If Progress is empty, break Goal into atomic steps.
+        1. **EVENT PRIORITY:** Look at 'CONTEXT EVENTS TO HANDLE'.
+           - IF a completion event is present, you MUST acknowledge the action as COMPLETE.
+           - **DO NOT** say "I am waiting for event" if the event is RIGHT HERE in the list.
+           - Update the summary to explicitly state "Event X received, action Y completed".
+        2. **INITIAL PLANNING:** If Progress is empty, break Goal into atomic steps.
            - **CRITICAL RULE:** Steps must be CONCRETE TOOL ACTIONS (e.g., "Activate Pump", "Open Valve"). 
            - **FORBIDDEN:** Abstract steps like "Assess environment", "Prepare tools", "Gather materials".
            - Step 1 MUST be "Retrieve and Mount Protocol Manuals".
            
-        2. **STRICT VERIFICATION:** Mark [x] ONLY if confirmed by an EVENT, a VARIABLE change, or a successful HISTORY action.
+        3. **STRICT VERIFICATION:** Mark [x] ONLY if confirmed by an EVENT, a VARIABLE change, or a successful HISTORY action.
            - If a step was "Retrieve Manuals" and History says "Saved: hydraulics", mark it [x].
            
-        3. **REPLANNING:** If an EVENT or VARIABLE or MANUAL indicates a new condition affecting the plan, update the checklist accordingly.
+        4. **REPLANNING:** If an EVENT or VARIABLE or MANUAL indicates a new condition affecting the plan, update the checklist accordingly.
            - Add new steps if needed.
            - Remove or adjust steps that are no longer relevant.
            - Ensure all tools to be used have their manuals retrieved first based on the CURRENT PROGRESS TRACKER first [ ] step.
