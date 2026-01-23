@@ -1,0 +1,21 @@
+# TOML
+[project]
+name = "mcp-robot-cube"
+version = "0.1.0"
+description = "MCP server for a physical/virtual robot arm with CV and a simulated cube."
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [{ name = "Luca Tonelli", email = "luca.tonelli11@studio.unibo.it" }]
+
+dependencies = [
+    "fastapi==0.128.0",
+    "uvicorn==0.40.0",
+    "requests==2.32.5",
+    "sse-starlette==3.1.2",
+    "h11==0.16.0",
+]
+
+[tool.uvicorn]
+host = "0.0.0.0"
+port = 8000
+factory = false
