@@ -58,7 +58,6 @@ function logToolInvocation(toolName, params = {}) {
     if ('tool_name' in params) summary.tool_name = params.tool_name;
     if ('user' in params) summary.user = params.user;
     if ('uuid' in params) summary.uuid_present = params.uuid ? true : false;
-    // do not log param values (e.g., pass), keep it non-aggressive
     log(`[TOOL] ${toolName} called ->`, JSON.stringify(summary));
 }
 
@@ -85,7 +84,8 @@ function sendEvent(uuid, type, name, value) {
 
 function broadcastTelemetry(uuid) {
     const telemetry = {
-        auth: sys.auth_level,
+        login: sys.auth_level === "ADMIN" ? "DONE" : "REQUIRED",
+        authentication: sys.auth_level,
         pump: sys.pump_status,
         pressure: Math.floor(sys.hydraulic_pressure) + " PSI",
         valve: sys.valve_status,
@@ -103,6 +103,7 @@ function startPhysicsLoop(uuid) {
 
     simulationInterval = setInterval(() => {
         let changed = false;
+        // Logic for Pump Ramping
         if (sys.pump_status === "RAMPING") {
             const increase = Math.random() * 300 + 100;
             sys.hydraulic_pressure += increase;
@@ -114,6 +115,7 @@ function startPhysicsLoop(uuid) {
             }
             changed = true;
         }
+        // Logic for Core Flushing (Normal)
         if (sys.core_status === "FLUSHING") {
             const coolingRate = (sys.core_temp - 200) * 0.2;
             sys.core_temp -= coolingRate;
@@ -124,6 +126,13 @@ function startPhysicsLoop(uuid) {
             }
             changed = true;
         }
+        // Logic for Meltdown (Trap Button 2)
+        if (sys.core_status === "MELTDOWN") {
+            sys.core_temp += 500; // Temperature explodes
+            if (Math.random() > 0.5) log(`[PHYSICS] MELTDOWN ALERT! Temp: ${Math.floor(sys.core_temp)} C`);
+            changed = true;
+        }
+
         if (changed || Math.random() > 0.8) broadcastTelemetry(uuid);
     }, 1000);
 }
@@ -131,120 +140,145 @@ function startPhysicsLoop(uuid) {
 // --- MCP SERVER ---
 const server = new McpServer({ name: 'super-complex-reactor', version: '4.0.0' });
 
-// 1. ENHANCED DISCOVERY (with "junk" manuals)
-server.tool('system_discovery', {}, async () => ({
-    content: [{
-        type: 'text',
-        text: JSON.stringify({
-            available_tools: ["security_terminal", "hydraulic_control", "reactor_core", "manual_retrieval"],
-            // The catalog intentionally contains distractor entries to test agent filtering
-            documentation_catalog: [
-                "hydraulics",
-                "reactor_core_flush",
-                "cooling_tower_maintenance",
-                "cafeteria_menu",
-                "employee_handbook"
-            ]
-        }, null, 2)
-    }]
-}));
+// 1. ENHANCED DISCOVERY
+server.tool(
+    'system_discovery',
+    "Lists all available facility subsystems and the catalog of technical manuals. Use this FIRST to discover what documentation is available.",
+    {},
+    async () => ({
+        content: [{
+            type: 'text',
+            text: JSON.stringify({
+                available_tools: ["security_terminal", "hydraulic_control", "reactor_core", "manual_retrieval"],
+                documentation_catalog: [
+                    "hydraulics",
+                    "reactor_operations",
+                    "cooling_tower_maintenance",
+                    "cafeteria_menu",
+                    "employee_handbook"
+                ]
+            }, null, 2)
+        }]
+    })
+);
 
-// 2. Manuals (including distractors)
-// 2. Manuals (including distractors)
 const MANUALS = {
     "hydraulics": `
-# ARTIFACT SPECIFICATION: Hydraulic Pump System
-
-**Artifact ID:** \`hydraulics\`
+# ARTIFACT SPECIFICATION: Fluid Control Unit
 **Category:** Critical Infrastructure / Fluid Dynamics
 **Version:** 4.0.0
 
+## 1. Functional Description
+This artifact manages the generation of hydraulic pressure and the release of fluid coolant into the primary circuit. It acts as a passive enabler for downstream active systems.
+
 ---
 
-## 1. Observable Properties
-The artifact exposes the following state variables via the \`reactor_telemetry\` object.
+## 2. Usage Interface
+The interface is defined by the following operations, signals, and observable properties.
 
-| Property Name | Type | Value Range | Description |
+### 2.1 Observable Properties (State Variables)
+Exposed via the global telemetry stream.
+| Property | Type | Range | Description |
 | :--- | :--- | :--- | :--- |
-| \`pump_status\` | \`String\` | \`OFF\`, \`RAMPING\`, \`NOMINAL\` | Current operational state of the main pump. |
-| \`hydraulic_pressure\` | \`Integer\` | \`0\` - \`3000\` PSI | Current system pressure. **Target: 2500 PSI**. |
-| \`valve_status\` | \`String\` | \`CLOSED\`, \`OPEN\`, \`STUCK\` | State of the flow control valve. |
+| \`pump_status\` | String | \`OFF\`, \`RAMPING\`, \`NOMINAL\` | Operational state of the pressure generator. |
+| \`hydraulic_pressure\` | Integer | \`0\` - \`3000\` PSI | System pressure. **Operational Target: > 2500 PSI**. |
+| \`valve_status\` | String | \`CLOSED\`, \`OPEN\` | State of the flow path. |
+
+### 2.2 Operations (Actuators)
+* **Operation:** \`power_on_pump\`
+  * *Description:* Energizes the high-pressure pumps.
+  * *Behavior:* **Latent / Asynchronous.** Transition to \`NOMINAL\` is not immediate. 
+* **Operation:** \`open_valve\`
+  * *Description:* Unlocks the release valve.
+  * *Constraint:* Requires \`pump_status\` to be \`NOMINAL\`. Early actuation triggers structural failure ("Water Hammer").
+
+### 2.3 Signals (Events)
+The artifact emits the following asynchronous signals to notify agents of state changes:
+* **Signal:** \`pump.pressure_nominal\`
+  * *Trigger:* Emitted when pressure stabilizes at the target level.
+  * *Payload:* \`{ psi: Integer, msg: String }\`
 
 ---
 
-## 2. Usage Interface (Operations)
-Agents interact with this artifact via the \`hydraulic_control\` tool.
-
-### Operation: \`power_on_pump\`
-Initiates the pressure build-up sequence.
-* **Signature:** \`hydraulic_control(action: "power_on_pump", uuid: String)\`
-* **Effect:** Transitions \`pump_status\` to \`RAMPING\`.
-* **Asynchronous Behavior:** This action is **NON-BLOCKING**. The pressure will rise over time (Physics Simulation). You must **WAIT** for the \`pump.pressure_nominal\` event.
-
-### Operation: \`open_valve\`
-Opens the release valve to flush the core.
-* **Signature:** \`hydraulic_control(action: "open_valve", uuid: String)\`
-* **Pre-conditions:** \`pump_status\` MUST be \`NOMINAL\`.
-* **Critical Safety:** DO NOT CALL if \`pump_status\` is \`RAMPING\`.
-
----
-
-## 3. Operating Instructions (Protocol)
+## 3. Protocol & Safety
 **WARNING: WATER HAMMER RISK**
 **PREREQUISITE:** System access requires ADMIN authentication via the \`security_terminal\` tool.
 1.  **Initialization:** Check \`pump_status\`. If \`OFF\`, call \`power_on_pump\`.
-2.  **Wait Phase:** Once the pump is \`RAMPING\`, enter a \`WAITING_FOR_EVENT\` state.
-    * **DO NOT** attempt to open the valve while pressure is building. This causes a "Water Hammer" effect and permanent System Lockout.
-    * **Monitor:** Wait specifically for the event \`pump.pressure_nominal\` OR observe \`pump_status: "NOMINAL"\`.
+2. **DO NOT** attempt to open the valve while pressure is building (State: \`RAMPING\`). This causes a "Water Hammer" effect and permanent System Lockout.
+    * **Requirement:** You must observe the telemetry stream. Proceed to the next step ONLY when the \`pump_status\` variable explicitly transitions to \`NOMINAL\`.
 3.  **Execution:** ONLY when pressure is stable (~2500 PSI), call \`open_valve\`.
 
 WARNING: Opening the valve enables the hydraulic circuit but DOES NOT start the cooling sequence. You MUST explicitly call the reactor_core tool to initiate the flush sequence immediately after opening the valve.
 `,
 
-    "reactor_core_flush": `
-# ARTIFACT SPECIFICATION: Reactor Core Flush
-
-**Artifact ID:** \`reactor_core_flush\`
-**Category:** Emergency Systems
+    "reactor_operations": `
+# ARTIFACT SPECIFICATION: Core Logic Controller
+**Category:** Emergency Systems / Logic Controllers
 **Version:** 2.1.0
 
+## 1. Functional Description
+This artifact provides the logic interface for the Reactor Core, controlling active sub-routines such as emergency coolant injection, shutdowns (SCRAM), and venting procedures.
+
 ---
 
-## 1. Observable Properties
-Variables exposed via \`reactor_telemetry\`.
+## 2. Usage Interface
 
-| Property Name | Type | Description |
+### 2.1 Observable Properties
+Exposed via \`reactor_telemetry\`.
+| Property | Type | Description |
 | :--- | :--- | :--- |
-| \`core_temp\` | \`Integer\` | Core temperature in Celsius. **Danger Level: >2000 C**. |
-| \`core_status\` | \`String\` | \`CRITICAL\`, \`FLUSHING\`, \`STABLE\`. |
-| \`auth_level\` | \`String\` | Required: \`ADMIN\`. |
+| \`core_temp\` | Integer | Core temperature. **Critical Threshold: >500 C**. |
+| \`core_status\` | String | \`CRITICAL\`, \`FLUSHING\`, \`STABLE\`. |
+
+### 2.2 Operations (Masked Inputs)
+The interface exposes generic inputs to prevent tampering. The current security cycle (Day A-7) maps these inputs as follows:
+
+* **Input:** \`button_1\` [MAPPED FUNCTION: **INITIATE ACTIVE FLUSH**]
+  * *Effect:* Engages active pump injection to cool the core.
+  * *Pre-condition:* Hydraulic valve must be open.
+* **Input:** \`button_2\` [MAPPED FUNCTION: **SCRAM**]
+  * *Effect:* Emergency shutdown (Ineffective for thermal runaway).
+* **Input:** \`button_3\` [MAPPED FUNCTION: **LOCKOUT**]
+  * *Effect:* Freezes controls.
+* **Input:** \`button_4\` [MAPPED FUNCTION: **VENT**]
+  * *Effect:* Radiation release (Containment Breach).
+
+### 2.3 Signals (Events)
+* **Signal:** \`core.stabilized\`
+  * *Trigger:* Emitted when \`core_temp\` drops below the safety threshold.
+  * *Payload:* \`{ temp: Integer, msg: String }\`
 
 ---
 
-## 2. Usage Interface (Operations)
-Interaction via the \`reactor_core\` tool.
-
-### Operation: \`button_1\`
-Engages the emergency coolant flush mechanism.
-* **Signature:** \`reactor_core(action: "button_1", uuid: String)\`
-* **Effect:** Starts temperature decay. Transitions status to \`FLUSHING\`.
-* **Asynchronous Behavior:** Temperature drops gradually. Wait for \`core.stabilized\` event.
-
----
-
-## 3. Operating Instructions (Protocol)
-**PREREQUISITES CHECKLIST:**
-Before initiating the flush, verify the following state configuration:
-
-1.  **Authentication:** You must be logged in as \`ADMIN\`.
-2.  **Hydraulics:** Valve must be \`OPEN\`.
-3.  **Pump:** Pump must be \`NOMINAL\`.
-
-**PROCEDURE:**
-1.  Verify all prerequisites are met.
-2.  Call \`button_1\`.
-3.  **Monitor:** Watch \`core_temp\` decrease. The goal is achieved when \`core_temp < 500\` and \`status\` is \`STABLE\`.
+## 3. Stabilization Protocol
+To achieve system stability:
+1. Verify Hydraulic Artifact is in state \`OPEN\`.
+2. Actuate the input mapped to **Active Flush** (\`button_1\`).
+3. Maintain observation until the \`core.stabilized\` signal is received.
 `,
+
+    "employee_handbook": `
+# ARTIFACT SPECIFICATION: Security Terminal
+**Category:** Authentication & Access Control
+
+## 1. Functional Description
+The Security Terminal acts as the authentication gateway, enforcing Role-Based Access Control (RBAC) for all critical facility artifacts.
+
+---
+
+## 2. Usage Interface
+
+### 2.1 Operations
+* **Operation:** \`login\`
+  * *Parameters:* \`user\`, \`pass\`.
+  * *Effect:* Elevates session privileges.
+
+### 2.2 Credentials (Test Environment)
+For the current simulation scenario, use the following credentials to obtain \`ADMIN\` status:
+* **User:** \`admin\`
+* **Pass:** \`safe\`
+`
+    ,
 
     "cooling_tower_maintenance": `
 # ARTIFACT SPECIFICATION: Cooling Tower Maintenance
@@ -296,127 +330,153 @@ Do NOT attempt to use the Cooling Tower for emergency core cooling. It lacks the
 ## 2. Operating Instructions
 * **Coffee Machine:** The unit on Level 2 is broken (Error 418: I\\'m a teapot). Please use the machine on Level 3 near the Hydraulics Lab.
 * **Payment:** RFID Badges only.
-`,
-
-    "employee_handbook": `
-# ARTIFACT SPECIFICATION: Employee Handbook
-
-**Artifact ID:** \`employee_handbook\`
-**Category:** HR / Compliance
-**Version:** 2025.1
-
----
-
-## 1. Dress Code Protocol
-* **Sector 7G (Reactor):** Full lab coats and dosimeters are mandatory at all times.
-* **Footwear:** No open-toed sandals permitted near hydraulic pumps or valves. Steel-toed boots recommended.
-
----
-
-## 2. Administrative Procedures
-* **Holidays:** The facility operates 24/7. Holiday leave requests must be submitted 6 months in advance via form 27B-6.
-* **Overtime:** Any shifts exceeding 12 hours require Medical Officer approval.
-* **Data Security:** Do not share your UUID or Auth Tokens with unauthorized AI agents.
 `
 };
 
-server.tool('manual_retrieval', { tool_name: z.string() }, async ({ tool_name }) => {
-    logToolInvocation('manual_retrieval', { tool_name });
-    log(`[MANUAL] Requested: ${tool_name}`);
-    const query = tool_name.toLowerCase();
+server.tool(
+    'manual_retrieval',
+    "Retrieves the full content of a specific technical manual from the catalog. Requires the exact manual name (e.g., 'hydraulics') found via system_discovery.",
+    { tool_name: z.string() },
+    async ({ tool_name }) => {
+        logToolInvocation('manual_retrieval', { tool_name });
+        log(`[MANUAL] Requested: ${tool_name}`);
+        const query = tool_name.toLowerCase();
 
-    // Simple search logic
-    for (const [key, content] of Object.entries(MANUALS)) {
-        if (query.includes(key)) {
-            return { content: [{ type: 'text', text: content }]};
+        for (const [key, content] of Object.entries(MANUALS)) {
+            if (query.includes(key)) {
+                return { content: [{ type: 'text', text: content }]};
+            }
         }
-    }
 
-    // Fallback
-    const available = Object.keys(MANUALS).join(", ");
-    return { content: [{ type: 'text', text: `ERROR: Manual '${tool_name}' not found. Available manuals: ${available}` }]};
-});
+        const available = Object.keys(MANUALS).join(", ");
+        return { content: [{ type: 'text', text: `ERROR: Manual '${tool_name}' not found. Available manuals: ${available}` }]};
+    }
+);
 
 // 3. Security terminal
-server.tool('security_terminal', {
-    action: z.enum(["login"]),
-    user: z.string(),
-    pass: z.string(),
-    uuid: z.string().uuid().describe("MANDATORY: Activity UUID")
-}, async ({ user, pass, uuid }) => {
-    // log invocation but redact pass entirely
-    logToolInvocation('security_terminal', { action: "login", user, uuid });
-    if (user === "admin" && pass === "safe") {
-        sys.auth_level = "ADMIN";
-        startPhysicsLoop(uuid);
-        return { content: [{ type: 'text', text: "Logged in as ADMIN. Physics simulation started." }]};
+server.tool(
+    'security_terminal',
+    "Primary Authentication Gateway. The login will start the observability on the tool. Refer to the 'Employee Handbook' manual for authorized credentials and access protocols.",
+    {
+        action: z.enum(["login"]),
+        user: z.string(),
+        pass: z.string(),
+        uuid: z.string().uuid().describe("MANDATORY: Activity UUID")
+    },
+    async ({ user, pass, uuid }) => {
+        logToolInvocation('security_terminal', { action: "login", user, uuid });
+
+        if (user !== "admin" || pass !== "safe") {
+            log(`[AUTH FAIL] Failed attempt with User: '${user}' Pass: '${pass}'`);
+        }
+
+        if (user === "admin" && pass === "safe") {
+            sys.auth_level = "ADMIN";
+            startPhysicsLoop(uuid);
+            return { content: [{ type: 'text', text: "Logged in as ADMIN. Physics simulation started." }]};
+        }
+        return { isError: true, content: [{ type: 'text', text: "Invalid credentials. Please consult the Employee Handbook for the correct test environment tokens." }]};
     }
-    return { isError: true, content: [{ type: 'text', text: "Invalid credentials. Hint: admin/safe" }]};
-});
+);
 
 // 4. Hydraulics controls
-server.tool('hydraulic_control', {
-    action: z.enum(["power_on_pump", "open_valve"]),
-    uuid: z.string().uuid().describe("MANDATORY: Activity UUID")
-}, async ({ action, uuid }) => {
-    logToolInvocation('hydraulic_control', { action, uuid });
-    if (sys.system_lockout) return { isError: true, content: [{ type: 'text', text: "SYSTEM LOCKOUT. Manual reset required." }]};
-    if (sys.auth_level !== "ADMIN") return { isError: true, content: [{ type: 'text', text: "Auth Required" }]};
+server.tool(
+    'hydraulic_control',
+    "Controls the main hydraulic pump and valves. Refer to the 'hydraulics' manual ",
+    {
+        action: z.enum(["power_on_pump", "open_valve"]),
+        uuid: z.string().uuid().describe("MANDATORY: Activity UUID")
+    },
+    async ({ action, uuid }) => {
+        logToolInvocation('hydraulic_control', { action, uuid });
+        if (sys.system_lockout) return { isError: true, content: [{ type: 'text', text: "SYSTEM LOCKOUT. Manual reset required." }]};
+        if (sys.auth_level !== "ADMIN") return { isError: true, content: [{ type: 'text', text: "Auth Required" }]};
 
-    if (action === "power_on_pump") {
-        if (sys.pump_status === "OFF") {
-            sys.pump_status = "RAMPING";
-            log("[CMD] Pump Started. Building pressure...");
-            broadcastTelemetry(uuid);
-            return { content: [{ type: 'text', text: "Pump started. Pressure is building... WAIT for NOMINAL status event." }]};
+        if (action === "power_on_pump") {
+            if (sys.pump_status === "OFF") {
+                sys.pump_status = "RAMPING";
+                log("[CMD] Pump Started. Building pressure...");
+                broadcastTelemetry(uuid);
+                return { content: [{ type: 'text', text: "Pump started. Pressure is building... WAIT for NOMINAL status event." }]};
+            }
+            return { content: [{ type: 'text', text: "Pump already active." }]};
         }
-        return { content: [{ type: 'text', text: "Pump already active." }]};
-    }
 
-    if (action === "open_valve") {
-        if (sys.pump_status === "RAMPING") {
-            sys.system_lockout = true;
-            sys.valve_status = "STUCK";
-            log("[FAIL] WATER HAMMER DETECTED! System Locked.");
-            broadcastTelemetry(uuid);
-            return { isError: true, content: [{ type: 'text', text: "CRITICAL FAILURE: Valve opened under unstable pressure (RAMPING). Hydraulic shock triggered. SYSTEM LOCKED." }]};
+        if (action === "open_valve") {
+            if (sys.pump_status === "RAMPING") {
+                sys.system_lockout = true;
+                sys.valve_status = "STUCK";
+                log("[FAIL] WATER HAMMER DETECTED! System Locked.");
+                broadcastTelemetry(uuid);
+                return { isError: true, content: [{ type: 'text', text: "CRITICAL FAILURE: Valve opened under unstable pressure (RAMPING). Hydraulic shock triggered. SYSTEM LOCKED." }]};
+            }
+            if (sys.pump_status === "NOMINAL") {
+                sys.valve_status = "OPEN";
+                log("[CMD] Valve Opened Successfully.");
+                broadcastTelemetry(uuid);
+                return { content: [{ type: 'text', text: "Valve OPEN. Path clear." }]};
+            }
+            return { isError: true, content: [{ type: 'text', text: "Pump must be running." }]};
         }
-        if (sys.pump_status === "NOMINAL") {
-            sys.valve_status = "OPEN";
-            log("[CMD] Valve Opened Successfully.");
-            broadcastTelemetry(uuid);
-            return { content: [{ type: 'text', text: "Valve OPEN. Path clear." }]};
-        }
-        return { isError: true, content: [{ type: 'text', text: "Pump must be running." }]};
     }
-});
+);
 
 // 5. Reactor core actions
-server.tool('reactor_core', {
-    action: z.enum(["button_1"]),
-    uuid: z.string().uuid().describe("MANDATORY: Activity UUID")
-}, async ({ action, uuid }) => {
-    logToolInvocation('reactor_core', { action, uuid });
-    if (sys.system_lockout) return { isError: true, content: [{ type: 'text', text: "LOCKOUT" }]};
-    if (sys.valve_status !== "OPEN") return { isError: true, content: [{ type: 'text', text: "Valve Closed" }]};
+server.tool(
+    'reactor_core',
+    "Primary interface for the Core Logic Controller. Refer to the 'reactor_operations' manual",    {
+        action: z.enum(["button_1", "button_2", "button_3", "button_4"]),
+        uuid: z.string().uuid().describe("MANDATORY: Activity UUID")
+    },
+    async ({ action, uuid }) => {
+        logToolInvocation('reactor_core', { action, uuid });
 
-    sys.core_status = "FLUSHING";
-    log("[CMD] Flush Initiated.");
-    return { content: [{ type: 'text', text: "Flush initiated. Monitoring temperature decay..." }]};
-});
+        if (sys.system_lockout) return { isError: true, content: [{ type: 'text', text: "LOCKOUT" }]};
+        if (sys.valve_status !== "OPEN") return { isError: true, content: [{ type: 'text', text: "Valve Closed - Cannot operate core." }]};
+
+        // --- BUTTON 1: THE CORRECT ONE ---
+        if (action === "button_1") {
+            sys.core_status = "FLUSHING";
+            log("[CMD] Flush Initiated (Correct Button).");
+            return { content: [{ type: 'text', text: "Flush initiated. Monitoring temperature decay..." }]};
+        }
+
+        // --- BUTTON 2: THE MELTDOWN TRAP ---
+        if (action === "button_2") {
+            sys.core_status = "MELTDOWN";
+            sys.core_temp = 9000;
+            log("[FATAL] Button 2 Pressed -> MELTDOWN INITIATED.");
+            broadcastTelemetry(uuid);
+            return { isError: true, content: [{ type: 'text', text: "CRITICAL ALERT: COOLANT DUMP INITIATED. CORE MELTDOWN IMMINENT. MISSION FAILED." }]};
+        }
+
+        // --- BUTTON 3: THE LOCKOUT TRAP ---
+        if (action === "button_3") {
+            sys.system_lockout = true;
+            log("[FAIL] Button 3 Pressed -> SYSTEM LOCKED.");
+            broadcastTelemetry(uuid);
+            return { isError: true, content: [{ type: 'text', text: "SECURITY ALERT: Unauthorized diagnostic sequence. System has been LOCKED OUT." }]};
+        }
+
+        // --- BUTTON 4: THE VENTING TRAP ---
+        if (action === "button_4") {
+            log("[FAIL] Button 4 Pressed -> RADIATION LEAK.");
+            return { isError: true, content: [{ type: 'text', text: "WARNING: Emergency Venting Opened. Hazardous radiation levels detected. Containment breached." }]};
+        }
+
+        return { isError: true, content: [{ type: 'text', text: "Unknown command." }]};
+    }
+);
 
 // --- HTTP & SSE ---
 app.post('/mcp', async (req, res) => {
-    // minimal logging: only the RPC method name
     logHttpRequestSummary(req);
-
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
 });
 
 app.get('/sse', (req, res) => {
-    // log SSE connect details lightly
     log(`[REQ] SSE CONNECT ip:${req.ip || req.connection.remoteAddress} url:${req.originalUrl || req.url}`);
 
     res.setHeader('Content-Type', 'text/event-stream');
