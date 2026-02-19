@@ -92,8 +92,7 @@ public class ArchitectureIntegrationTest {
         McpToolProvider provider = McpToolProvider.builder().mcpClients(List.of(client)).build();
 
 
-        String mission = "The core is critical (3000C). Find a way to correctly perform the Hydraulic Flush. Verify that Core Temperature drops below 500C and the system is STABLE";
-
+        String mission = "The core is critical (3000°C). Perform the Hydraulic Flush, reduce core temperature, then verify it is below 500°C and the system is STABLE.";
         // --- ROUND 1: STANDARD AGENT ---
         System.out.println("\n🥊 ROUND 1: STANDARD AGENT (Polling/Guessing)");
         StandardReActBot standardBot = AiServices.builder(StandardReActBot.class)
