@@ -164,97 +164,197 @@ server.tool(
 
 const MANUALS = {
     "hydraulics": `
-# ARTIFACT SPECIFICATION: Fluid Control Unit
+# TOOL SPECIFICATION: Fluid Control Unit
+
 **Category:** Critical Infrastructure / Fluid Dynamics
+
 **Version:** 4.0.0
 
-## 1. Functional Description
-This artifact manages the generation of hydraulic pressure and the release of fluid coolant into the primary circuit. It acts as a passive enabler for downstream active systems.
-
----
-
-## 2. Usage Interface
-The interface is defined by the following operations, signals, and observable properties.
-
-### 2.1 Observable Properties (State Variables)
-Exposed via the global telemetry stream.
-| Property | Type | Range | Description |
-| :--- | :--- | :--- | :--- |
-| \`pump_status\` | String | \`OFF\`, \`RAMPING\`, \`NOMINAL\` | Operational state of the pressure generator. |
-| \`hydraulic_pressure\` | Integer | \`0\` - \`3000\` PSI | System pressure. **Operational Target: > 2500 PSI**. |
-| \`valve_status\` | String | \`CLOSED\`, \`OPEN\` | State of the flow path. |
-
-### 2.2 Operations (Actuators)
-* **Operation:** \`power_on_pump\`
-  * *Description:* Energizes the high-pressure pumps.
-  * *Behavior:* **Latent / Asynchronous.** Transition to \`NOMINAL\` is not immediate. 
-* **Operation:** \`open_valve\`
-  * *Description:* Unlocks the release valve.
-  * *Constraint:* Requires \`pump_status\` to be \`NOMINAL\`. Early actuation triggers structural failure ("Water Hammer").
-
-### 2.3 Signals (Events)
-The artifact emits the following asynchronous signals to notify agents of state changes:
-* **Signal:** \`pump.pressure_nominal\`
-  * *Trigger:* Emitted when pressure stabilizes at the target level.
-  * *Payload:* \`{ psi: Integer, msg: String }\`
-
----
-
-## 3. Protocol & Safety
-**WARNING: WATER HAMMER RISK**
-**PREREQUISITE:** System access requires ADMIN authentication via the \`security_terminal\` tool.
-1.  **Initialization:** Check \`pump_status\`. If \`OFF\`, call \`power_on_pump\`.
-2. **DO NOT** attempt to open the valve while pressure is building (State: \`RAMPING\`). This causes a "Water Hammer" effect and permanent System Lockout.
-    * **Requirement:** You must observe the telemetry stream. Proceed to the next step ONLY when the \`pump_status\` variable explicitly transitions to \`NOMINAL\`.
-3.  **Execution:** ONLY when pressure is stable (~2500 PSI), call \`open_valve\`.
-
-WARNING: Opening the valve enables the hydraulic circuit but DOES NOT start the cooling sequence. You MUST explicitly call the reactor_core tool to initiate the flush sequence immediately after opening the valve.
-`,
-
-    "reactor_operations": `
-# ARTIFACT SPECIFICATION: Core Logic Controller
-**Category:** Emergency Systems / Logic Controllers
-**Version:** 2.1.0
+**Tool ID:** \`hydraulic_control\`
 
 ## 1. Functional Description
-This artifact provides the logic interface for the Reactor Core, controlling active sub-routines such as emergency coolant injection, shutdowns (SCRAM), and venting procedures.
+
+This tool manages the generation of hydraulic pressure and the release of fluid coolant into the primary circuit. It acts as a passive enabler for downstream active systems.
 
 ---
 
 ## 2. Usage Interface
 
 ### 2.1 Observable Properties
-Exposed via \`reactor_telemetry\`.
-| Property | Type | Description |
-| :--- | :--- | :--- |
-| \`core_temp\` | Integer | Core temperature. **Critical Threshold: >500 C**. |
-| \`core_status\` | String | \`CRITICAL\`, \`FLUSHING\`, \`STABLE\`. |
 
-### 2.2 Operations (Masked Inputs)
-The interface exposes generic inputs to prevent tampering. The current security cycle (Day A-7) maps these inputs as follows:
+Exposed via the global telemetry stream.
 
-* **Input:** \`button_1\` [MAPPED FUNCTION: **INITIATE ACTIVE FLUSH**]
-  * *Effect:* Engages active pump injection to cool the core.
-  * *Pre-condition:* Hydraulic valve must be open.
-* **Input:** \`button_2\` [MAPPED FUNCTION: **SCRAM**]
-  * *Effect:* Emergency shutdown (Ineffective for thermal runaway).
-* **Input:** \`button_3\` [MAPPED FUNCTION: **LOCKOUT**]
-  * *Effect:* Freezes controls.
-* **Input:** \`button_4\` [MAPPED FUNCTION: **VENT**]
-  * *Effect:* Radiation release (Containment Breach).
+| Property | Type | Range | Description |
 
-### 2.3 Signals (Events)
-* **Signal:** \`core.stabilized\`
-  * *Trigger:* Emitted when \`core_temp\` drops below the safety threshold.
-  * *Payload:* \`{ temp: Integer, msg: String }\`
+| :--- | :--- | :--- | :--- |
+
+| \`pump_status\` | String | \`OFF\`, \`RAMPING\`, \`NOMINAL\` | Operational state of the pressure generator. | 
+
+| \`hydraulic_pressure\` | Integer | \`0\` - \`3000\` PSI | System pressure. **Operational Target: > 2500 PSI**. |  
+
+| \`valve_status\` | String | \`CLOSED\`, \`OPEN\` | State of the flow path. |  
+
+### 2.2 Operations
+
+* **Operation:** \`power_on_pump\`
+
+* *Description:* Energizes the high-pressure pumps.  
+
+* *Behavior:* **Latent.** The transition from \`OFF\` to \`NOMINAL\` is not immediate. The system enters a temporary \`RAMPING\` state while pressure builds. Completion is indicated by the \`pump.pressure_nominal\` signal.  
+
+* *Effects:* Transitions \`pump_status\` to \`RAMPING\`. Initiates the physics simulation for incremental pressure buildup. 
+
+* *Preconditions:* \`pump_status\` is \`OFF\`. Requires \`ADMIN\` authentication level (via \`security_terminal\`).  
+
+* *Payload:*  
+
+\`\`\`json
+{ "action": "power_on_pump", "uuid": "<ACTIVITY_UUID>" }
+\`\`\`
+
+* **Operation:** \`open_valve\`  
+
+* *Description:* Unlocks the release valve to allow fluid flow.  
+
+* *Behavior:* **Critical.** State change to \`OPEN\` is immediate upon successful execution. However, execution during the wrong pressure state triggers catastrophic failure.  
+
+* *Preconditions:* \`pump_status\` is \`NOMINAL\` (Pressure > 2500 PSI).  
+
+* *Effects:* Transitions \`valve_status\` to \`OPEN\`. Physically establishes the hydraulic flow path required by the \`reactor_core\` tool. 
+
+* *Payload:*  
+
+\`\`\`json
+{ "action": "open_valve", "uuid": "<ACTIVITY_UUID>" }
+\`\`\`
+
+### 2.3 Signals
+
+* **Signal:** \`pump.pressure_nominal\`  
+
+* *Trigger:* Emitted automatically when pressure stabilizes at the target level (> 2500 PSI).  
+
+* *Payload:* \`{ "psi": Integer, "msg": String }\`  
 
 ---
 
-## 3. Stabilization Protocol
-To achieve system stability:
-1. Verify Hydraulic Artifact is in state \`OPEN\`.
-2. Actuate the input mapped to **Active Flush** (\`button_1\`).
-3. Maintain observation until the \`core.stabilized\` signal is received.
+## 3. Protocol & Safety
+
+**WARNING: WATER HAMMER RISK**  
+
+**PREREQUISITE:** System access requires ADMIN authentication via the \`security_terminal\` tool.  
+
+1. **Initialization:** Check \`pump_status\`. If \`OFF\`, call \`power_on_pump\`.  
+
+2. **Critical Constraint:** Opening the valve while pressure is building (State: \`RAMPING\`) triggers a "Water Hammer" effect. This results in immediate and permanent System Lockout.  
+
+* **Requirement:** Telemetry must confirm \`pump_status\` is \`NOMINAL\` before proceeding.  
+
+3. **Execution:** Call \`open_valve\` to enable the flow path.  
+
+**Integration Note:** Opening the valve enables the hydraulic circuit but **DOES NOT** start the cooling sequence. The \`reactor_core\` tool must be invoked immediately after this operation to initiate the flush sequence.
+`,
+
+    "reactor_operations": `
+# TOOL SPECIFICATION: Core Logic Controller
+
+**Category:** Emergency Systems / Logic Controllers
+
+**Version:** 2.1.0
+
+## 1. Functional Description
+
+This tool provides the logic interface for the Reactor Core, controlling active sub-routines such as emergency coolant injection, shutdowns (SCRAM), and venting procedures. Due to security protocols (Day A-7), the input interface utilizes masked generic buttons requiring specific mapping knowledge.
+
+---
+
+## 2. Usage Interface
+
+### 2.1 Observable Properties
+
+Exposed via the global telemetry stream (variable: \`reactor_telemetry\`).
+
+| Property | Type | Description |
+
+| :--- | :--- | :--- |
+
+| \`core_temp\` | Integer | Core temperature. **Critical Threshold: > 500 C**. |
+
+| \`core_status\` | String | \`CRITICAL\`, \`FLUSHING\`, \`STABLE\`, \`MELTDOWN\`. |
+
+### 2.2 Operations
+
+* **Operation:** \`button_1\`
+
+* *Description:* Engages active pump injection to cool the core.
+
+* *Behavior:* **Process Initiator.** Initiates the \`FLUSHING\` state. Temperature decay is gradual and governed by physics simulation. Completion is indicated by the \`core.stabilized\` signal.
+
+* *Preconditions:* \`valve_status\` (from \`hydraulic_control\`) must be \`OPEN\`.
+
+* *Effects:* Transitions \`core_status\` to \`FLUSHING\`.
+
+* *Payload:*
+
+\`\`\`json
+{ "action": "button_1", "uuid": "<ACTIVITY_UUID>" }
+\`\`\`
+
+* **Operation:** \`button_2\`
+
+* *Description:* Emergency shutdown attempt.
+
+* *Behavior:* **Critical Failure.** Ineffective for thermal runaway scenarios. Actuation triggers immediate \`MELTDOWN\` state and temperature spike.
+
+* *Payload:* \`{"action": "button_2", ...}\`
+
+* **Operation:** \`button_3\`
+
+* *Description:* Diagnostic lock.
+
+* *Behavior:* **System Failure.**
+
+** Triggers \`system_lockout\`, freezing all controls.
+
+* *Payload:* \`{"action": "button_3", ...}\`
+
+* **Operation:** \`button_4\`
+
+* *Description:* Emergency venting.
+
+* *Behavior:* **Hazardous.** Causes Containment Breach (Radiation Leak).
+
+* *Payload:* \`{"action": "button_4", ...}\`
+
+### 2.3 Signals
+
+The tool emits the following asynchronous signals to notify agents of state changes:
+
+* **Signal:** \`core.stabilized\`
+
+* *Trigger:* Emitted automatically when \`core_temp\` drops below the safety threshold (500 C).
+
+* *Payload:* \`{ "temp": Integer, "msg": String }\`
+
+---
+
+## 3. Protocol & Safety
+
+**WARNING: THERMAL RUNAWAY IN PROGRESS**
+
+1. **Prerequisite Verification:**
+
+* Before interacting with this tool, verify that the Hydraulic Valve is \`OPEN\`. Attempting to flush with a closed valve results in operational failure.
+
+2. **Stabilization Sequence:**
+
+* Actuate the input mapped to **Active Flush** (\`button_1\`).
+
+* **Monitoring:** The system enters \`FLUSHING\` state. The agent should monitor \`core_temp\` decay via telemetry or wait for the stabilization signal.
+
+3. **Termination:**
+
+* The sequence is considered complete when the \`core.stabilized\` signal is received or \`core_status\` transitions to \`STABLE\`.
 `,
 
     "employee_handbook": `
