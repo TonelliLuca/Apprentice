@@ -7,14 +7,14 @@ const app = express();
 app.use(express.json());
 
 // -------------------------
-// ARTIFACT STATE
+// TOOL STATE
 // -------------------------
 const sseClients = new Set();
 let sharedCounter = 1;
 const focusedAgents = new Set();
 
 const server = new McpServer({
-    name: 'shared-counter-artifact',
+    name: 'shared-counter-tool',
     version: '1.0.0'
 });
 
@@ -75,68 +75,95 @@ function broadcastUpdate(triggerUuid, actionDescription) {
 // MANUAL CONTENT
 // -------------------------
 const MANUAL_CONTENT = `
-# ARTIFACT SPECIFICATION: SharedCounter
+# TOOL SPECIFICATION: SharedCounter
 
-**Artifact ID:** \`counterTool\`
-**Category:** Coordination Artifact / Shared Memory
+**Category:** Coordination Tool / Shared Memory
 **Version:** 1.0.0
+**Tool ID:** \`counterTool\`
+
+## 1. Functional Description
+This tool provides a synchronized shared memory space for multi-agent coordination. It acts as a **passive enabler**, allowing multiple agents to concurrently increment and observe a global counter to synchronize their collective actions.
 
 ---
 
-## 1. Observable Properties
-The artifact exposes the following state variables directly into the agent's working memory context upon successful focus.
+## 2. Usage Interface
 
-| Property Name | Type | Description |
-| :--- | :--- | :--- |
-| \`shared_counter\` | \`Integer\` | The global count value shared across all agents. Updated automatically via telemetry. |
+### 2.1 Observable Properties
+Exposed via the global telemetry stream.
+
+| Property | Type | Range | Description |
+| :--- | :--- | :--- | :--- |
+| \`shared_counter\` | Integer | \`1\` - \`∞\` | The global count value shared across all agents. Updated automatically via telemetry. |
+
+### 2.2 Operations
+
+* **Operation:** \`focus\`
+  * *Description:* Establishes a cognitive link with the tool to enable perception of its state and events.
+  * *Behavior:* **Process Initiator.** Registration is processed immediately. Completion of the stream binding is indicated by the \`focus.established\` signal.
+  * *Preconditions:* None.
+  * *Effects:* Subscribes the agent to the telemetry stream. The \`shared_counter\` variable becomes visible in the agent's working memory context.
+  * *Payload:*
+    \`\`\`json
+    { "action": "focus", "uuid": "<ACTIVITY_UUID>" }
+    \`\`\`
+
+* **Operation:** \`inc\`
+  * *Description:* Sends an impulse to increment the shared global state.
+  * *Behavior:* **Latent.** The tool returns an acknowledgement for the request. State changes are propagated asynchronously via telemetry.
+  * *Preconditions:* Agents are recommended to call \`focus\` to subscribe to telemetry before interacting. Calling \`inc\` without focus will result in an operational error.
+  * *Effects:* Increments \`shared_counter\` by 1 and triggers a broadcast telemetry update to all focused agents.
+  * *Payload:*
+    \`\`\`json
+    { "action": "inc", "uuid": "<ACTIVITY_UUID>" }
+    \`\`\`
+
+### 2.3 Signals
+The tool emits the following asynchronous signals to notify agents of state transitions:
+
+* **Signal:** \`focus.established\`
+  * *Trigger:* Emitted automatically when the agent successfully registers for the telemetry stream.
+  * *Payload:* \`{ "key": String, "name": String, "message": String }\`
+
+* **Signal:** \`environment.change\`
+  * *Trigger:* Emitted automatically whenever ANY agent increments the counter, alerting all subscribers of a state mutation.
+  * *Payload:* \`{ "key": String, "name": String, "message": String }\`
 
 ---
 
-## 2. Usage Interface (Operations)
-Agents interact with the artifact via the \`counterTool\`. The behavior depends on the \`action\` parameter.
+## 3. Protocol & SAFETY
 
-### Operation: \`focus\`
-Establishes a cognitive link with the artifact, enabling perception of observable properties and events.
+**ASYNCHRONOUS STATE MUTATION (Informational)**
 
-* **Signature:** \`counterTool(action: "focus", uuid: String)\`
-* **Pre-conditions:** None.
-* **Post-conditions:**
-    * Agent is subscribed to updates.
-    * \`shared_counter\` becomes visible in context.
-    * Receives confirmation event \`focus.established\`.
+1. **Recommended Prerequisite:**
+   * Agents are recommended to call \`focus\` to subscribe to telemetry before interacting with the counter. This ensures they will receive updates about \`shared_counter\`.
 
-### Operation: \`inc\`
-Sends an impulse to increment the shared state.
+2. **Execution Notes (Perception-Action Loop):**
+   * Calling \`inc\` issues a request to increment the counter and returns an acknowledgement.
+   * State changes are distributed asynchronously. Agents may choose to:
+     - listen for the \`environment.change\` signal to confirm a mutation, or
+     - observe the \`shared_counter\` telemetry for the new value.
 
-* **Signature:** \`counterTool(action: "inc", uuid: String)\`
-* **Pre-conditions:** Agent must have previously executed \`focus\`.
-* **Effects:**
-    * Increments \`shared_counter\` by 1.
-    * Triggers broadcast update to all focused agents.
-
----
-
-## 3. Operating Instructions (Protocol)
-To ensure data consistency, agents **MUST** follow this perception-action loop:
-
-1.  **Initialization:** Call \`focus\` immediately upon discovery.
-2.  **Action:** When calling \`inc\`, the tool output is merely an acknowledgement ("Impulse sent"). **Do not assume the state has changed yet.**
-3.  **Perception:** Wait for the \`environment.change\` event.
-4.  **Verification:** Check the \`shared_counter\` variable in your context. It is guaranteed to be updated *before* the event arrives.
-
-> **Note on Concurrency:** This is a shared environment. The counter may change due to other agents' actions. Always consult the \`shared_counter\` variable before decision making.
+3. **Concurrency Note:**
+   * This is a shared environment. The \`shared_counter\` may change due to other agents' actions. Prefer authoritative telemetry updates over local assumptions about the counter value.
 `;
 
 // -------------------------
 // TOOLS
 // -------------------------
 
-server.tool('manual_retrieval', { tool_name: z.string().optional() }, async ({ tool_name }) => {
-    console.log('[MANUAL] Manual requested for:', tool_name || "general");
-    return { content: [{ type: 'text', text: MANUAL_CONTENT }] };
-});
+server.tool(
+    'manual_retrieval',
+    "Retrieves the full content of a specific technical manual from the catalog.",
+    { tool_name: z.string().optional() },
+    async ({ tool_name }) => {
+        console.log('[MANUAL] Manual requested for:', tool_name || "general");
+        return { content: [{ type: 'text', text: MANUAL_CONTENT }] };
+    }
+);
 
-server.tool('counterTool',
+server.tool(
+    'counterTool',
+    "Provides a shared global counter for multi-agent coordination. Agents can subscribe for updates or request increments.",
     {
         action: z.enum(["focus", "inc"]),
         uuid: z.string().uuid().describe("Your Agent UUID")
@@ -178,7 +205,7 @@ server.tool('counterTool',
                 });
                 sendSse(eventPayload);
 
-                return { content: [{ type: 'text', text: "✅ Focus established. Synced." }] };
+                return { content: [{ type: 'text', text: " Focus established. Synced." }] };
             }
             return { content: [{ type: 'text', text: "You are already focused on this artifact." }] };
         }
@@ -186,7 +213,7 @@ server.tool('counterTool',
         // --- ACTION: INCREMENT ---
         if (action === "inc") {
             if (!focusedAgents.has(uuid)) {
-                return { isError: true, content: [{ type: 'text', text: "⛔ Error: You must FOCUS first." }] };
+                return { isError: true, content: [{ type: 'text', text: " Error: You must FOCUS first." }] };
             }
 
             log(`[TOOL] Increment request from ${uuid}. Current: ${sharedCounter} -> New: ${sharedCounter + 1}`);
