@@ -62,7 +62,7 @@ function broadcastUpdate(triggerUuid, actionDescription) {
                 mcpType: "event",
                 event: {
                     key: "counter_update",
-                    name: "environment.change",
+                    name: "counter.change",
                     message: `Counter changed.`,
                 }
             }
