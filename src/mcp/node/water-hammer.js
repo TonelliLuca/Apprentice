@@ -138,6 +138,7 @@ function startPhysicsLoop(uuid) {
 }
 
 // --- MCP SERVER ---
+function createServer() {
 const server = new McpServer({ name: 'super-complex-reactor', version: '4.0.0' });
 
 // 1. ENHANCED DISCOVERY
@@ -568,11 +569,14 @@ server.tool(
     }
 );
 
+    return server;
+}
+
 // --- HTTP & SSE ---
 app.post('/mcp', async (req, res) => {
     logHttpRequestSummary(req);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    await server.connect(transport);
+    await createServer().connect(transport);
     await transport.handleRequest(req, res, req.body);
 });
 

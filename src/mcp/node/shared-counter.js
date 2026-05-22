@@ -13,11 +13,6 @@ const sseClients = new Set();
 let sharedCounter = 1;
 const focusedAgents = new Set();
 
-const server = new McpServer({
-    name: 'shared-counter-tool',
-    version: '1.0.0'
-});
-
 function log(...args) { console.log(new Date().toISOString(), ...args); }
 
 // -------------------------
@@ -151,6 +146,12 @@ The tool emits the following asynchronous signals to notify agents of state tran
 // TOOLS
 // -------------------------
 
+function createServer() {
+const server = new McpServer({
+    name: 'shared-counter-tool',
+    version: '1.0.0'
+});
+
 server.tool(
     'manual_retrieval',
     "Retrieves the full content of a specific technical manual from the catalog.",
@@ -228,12 +229,15 @@ server.tool(
     }
 );
 
+    return server;
+}
+
 // -------------------------
 // SERVER
 // -------------------------
 app.post('/mcp', async (req, res) => {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    await server.connect(transport);
+    await createServer().connect(transport);
     await transport.handleRequest(req, res, req.body);
 });
 

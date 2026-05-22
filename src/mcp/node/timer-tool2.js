@@ -15,11 +15,6 @@ const pendingNotifications = new Map();
 // timers map: id -> { name, timeoutId, seconds }
 const timers = new Map();
 
-const server = new McpServer({
-    name: 'timer-artifact',
-    version: '2.0.0'
-});
-
 function now() {
     return new Date().toISOString();
 }
@@ -107,6 +102,12 @@ Verifies artifact connectivity and subscription status without starting a timer.
 // -------------------------
 // TOOLS
 // -------------------------
+
+function createServer() {
+const server = new McpServer({
+    name: 'timer-artifact',
+    version: '2.0.0'
+});
 
 // 1. MANUAL RETRIEVAL (Standard discovery tool)
 server.tool(
@@ -264,6 +265,9 @@ server.tool(
     }
 );
 
+    return server;
+}
+
 // -------------------------
 // MCP ENDPOINT
 // -------------------------
@@ -272,7 +276,7 @@ app.post('/mcp', async (req, res) => {
         sessionIdGenerator: undefined,
         enableJsonResponse: true
     });
-    await server.connect(transport);
+    await createServer().connect(transport);
     await transport.handleRequest(req, res, req.body);
 });
 
