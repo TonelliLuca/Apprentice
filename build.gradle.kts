@@ -90,7 +90,7 @@ tasks.register<JavaExec>("runReactorDemo") {
     group = "demo"
     description = "Run the Reactor (Water-Hammer) demo — auto-starts water-hammer.js"
     classpath = sourceSets.main.get().runtimeClasspath
-    mainClass.set("demo.ReactorDemo")
+    mainClass.set("demo.WaterHammerDemo")
     loadEnv(this)
     var mcpProcess: Process? = null
     doFirst { mcpProcess = startMcpServer(projectDir, "src/mcp/node/water-hammer.js") }
